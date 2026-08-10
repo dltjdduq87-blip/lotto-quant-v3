@@ -397,13 +397,13 @@ def page_play():
 
 
 PAGES = {
+    "🎰 추첨 플레이": page_play,
+    "💼 번호 생성": page_portfolio,
     "개요": page_overview,
     "통계 분석": page_statistics,
     "확률 엔진": page_probability,
-    "포트폴리오": page_portfolio,
     "Monte Carlo": page_simulation,
     "백테스트": page_backtest,
-    "🎰 추첨 플레이": page_play,
 }
 
 
@@ -430,9 +430,13 @@ def sidebar_data_refresh():
 
 def main():
     sidebar_data_refresh()
-    st.sidebar.header("메뉴")
-    choice = st.sidebar.radio("페이지 선택", list(PAGES.keys()))
-    PAGES[choice]()
+    # Tabs (not a sidebar radio) so navigation is visible in the main body on
+    # mobile too -- Streamlit auto-collapses the sidebar on narrow viewports,
+    # which made every page except the default one invisible on phones.
+    tabs = st.tabs(list(PAGES.keys()))
+    for tab, page_fn in zip(tabs, PAGES.values()):
+        with tab:
+            page_fn()
 
 
 if __name__ == "__main__":
