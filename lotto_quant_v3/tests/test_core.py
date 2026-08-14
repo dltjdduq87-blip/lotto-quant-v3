@@ -6,10 +6,14 @@ Run with:  python -m unittest lotto_quant_v3.tests.test_core -v
 import unittest
 from datetime import date
 
+import numpy as np
+import pandas as pd
+
 from lotto_quant_v3.data import news_search
 from lotto_quant_v3.data.excel_import import round_to_date
 from lotto_quant_v3.portfolio import generator, probability
 from lotto_quant_v3.probability import engine
+from lotto_quant_v3.statistics import randomness_tests
 
 
 class TestProbabilityEngine(unittest.TestCase):
@@ -93,6 +97,66 @@ class TestNewsSearchParsing(unittest.TestCase):
         self.assertEqual(news_search.most_recent_draw_round(date(2026, 8, 8)), 1236)
         self.assertEqual(news_search.most_recent_draw_round(date(2026, 8, 10)), 1236)
         self.assertEqual(news_search.most_recent_draw_round(date(2026, 8, 15)), 1237)
+
+
+def _synthetic_uniform_df(n=2000, seed=0):
+    """Genuinely random draws -- the tests should NOT flag these."""
+    rng = np.random.default_rng(seed)
+    rows = [tuple(sorted(rng.choice(range(1, 46), size=6, replace=False))) for _ in range(n)]
+    return pd.DataFrame({"numbers": rows})
+
+
+def _synthetic_biased_df(n=500, seed=0):
+    """Number 1 forced into every draw -- wildly non-uniform on purpose, so
+    the chi-square/entropy tests MUST flag it. This is the power check: a
+    test suite that never rejects anything, even on rigged data, is useless."""
+    rng = np.random.default_rng(seed)
+    rows = []
+    for _ in range(n):
+        rest = sorted(rng.choice(range(2, 46), size=5, replace=False))
+        rows.append(tuple([1] + rest))
+    return pd.DataFrame({"numbers": rows})
+
+
+def _synthetic_trending_df(n=200):
+    """Monotonically increasing draw-sum -- a deterministic trend, the
+    opposite of memoryless. The runs test MUST flag this (far too few runs)."""
+    rows = [(1, 2, 3, 4, 5, 6 + i) for i in range(n) if 6 + i <= 45]
+    return pd.DataFrame({"numbers": rows})
+
+
+class TestRandomnessTestsPower(unittest.TestCase):
+    """Sanity checks that the hypothesis tests actually have statistical
+    power -- i.e. they can and do reject the null on rigged synthetic data,
+    not just rubber-stamp everything as random."""
+
+    def test_chi_square_passes_true_uniform_data(self):
+        df = _synthetic_uniform_df(n=3000, seed=1)
+        result = randomness_tests.chi_square_uniformity(df)
+        self.assertFalse(result["reject_null_at_0.05"])
+
+    def test_chi_square_flags_biased_data(self):
+        df = _synthetic_biased_df(n=500, seed=2)
+        result = randomness_tests.chi_square_uniformity(df)
+        self.assertTrue(result["reject_null_at_0.05"])
+        self.assertLess(result["p_value"], 1e-10)
+
+    def test_entropy_lower_for_biased_data(self):
+        uniform = randomness_tests.entropy_analysis(_synthetic_uniform_df(n=3000, seed=3))
+        biased = randomness_tests.entropy_analysis(_synthetic_biased_df(n=500, seed=4))
+        self.assertGreater(uniform["ratio_to_max"], biased["ratio_to_max"])
+
+    def test_runs_test_flags_monotonic_trend(self):
+        df = _synthetic_trending_df(n=100)
+        result = randomness_tests.runs_test(df)
+        self.assertTrue(result["reject_null_at_0.05"])
+        self.assertLess(result["observed_runs"], result["expected_runs"])
+
+    def test_summarize_runs_without_error_on_real_shaped_data(self):
+        df = _synthetic_uniform_df(n=500, seed=5)
+        summary = randomness_tests.summarize_randomness(df)
+        self.assertEqual(summary["n_draws_tested"], 500)
+        self.assertIn("overall_conclusion", summary)
 
 
 if __name__ == "__main__":

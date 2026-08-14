@@ -24,7 +24,7 @@ from lotto_quant_v3.data import db, news_search
 from lotto_quant_v3.optimization import optimizer
 from lotto_quant_v3.portfolio import generator, probability
 from lotto_quant_v3.probability import engine as prob_engine
-from lotto_quant_v3.statistics import analysis, significance
+from lotto_quant_v3.statistics import analysis, randomness_tests, significance
 
 st.set_page_config(page_title="LOTTO 6/45 QUANT V3", page_icon="🎱", layout="wide")
 
@@ -286,6 +286,62 @@ def page_probability():
     st.table(pd.DataFrame(rows))
 
 
+def page_randomness():
+    st.title("🔬 정밀 통계 검증")
+    st.caption(
+        "예측 도구가 아닙니다 -- '이 데이터가 정말 i.i.d. 균등분포인가'를 엄밀하게 "
+        "검정합니다. 모든 검정이 귀무가설을 기각하지 못하는 것이 정상이자 기대되는 결과입니다."
+    )
+    df = load_history_df()
+    if df is None:
+        st.warning("데이터가 없습니다.")
+        return
+
+    if st.button("🔬 정밀 검정 실행"):
+        with st.spinner("카이제곱 · 런 검정 · 자기상관 · 엔트로피 분석 중..."):
+            result = randomness_tests.summarize_randomness(df)
+
+        n_reject = result["tests_rejecting_null_of_3"]
+        if n_reject == 0:
+            st.success(result["overall_conclusion"])
+        else:
+            st.warning(result["overall_conclusion"])
+
+        st.divider()
+        c1, c2 = st.columns(2)
+        with c1:
+            st.subheader("1. 카이제곱 균등성 검정")
+            chi2 = result["chi_square_uniformity"]
+            st.metric("p-value", f"{chi2['p_value']:.4f}")
+            st.write(f"χ² = {chi2['statistic']:.2f}, dof = {chi2['dof']}")
+            st.caption(chi2["interpretation"])
+
+            st.subheader("3. 자기상관 검정 (lag 1-3)")
+            for lag_name, lag in result["autocorrelation"]["lags"].items():
+                st.write(f"**{lag_name}**: r = {lag['correlation']:.4f}, p = {lag['p_value']:.4f}")
+            st.caption(result["autocorrelation"]["interpretation"])
+
+        with c2:
+            st.subheader("2. Wald-Wolfowitz 런 검정")
+            runs = result["runs_test"]
+            st.metric("p-value", f"{runs['p_value']:.4f}")
+            st.write(f"관측된 런: {runs['observed_runs']} (기대값: {runs['expected_runs']:.1f})")
+            st.caption(runs["interpretation"])
+
+            st.subheader("4. 섀넌 엔트로피")
+            ent = result["entropy"]
+            st.metric("엔트로피 비율 (1.0=완전균등)", f"{ent['ratio_to_max']:.4f}")
+            st.write(f"H = {ent['entropy_bits']:.4f} bits (최대 {ent['max_entropy_bits']:.4f} bits)")
+            st.caption(ent["interpretation"])
+
+        st.divider()
+        st.caption(
+            "다중검정 보정 참고: 검정 4개를 α=0.05로 각각 돌리면, 데이터가 진짜 무작위여도 "
+            "우연히 하나 이상 기각될 확률은 1-(0.95)^4 ≈ 18.5%입니다. 단일 유의 결과만으로 "
+            "비무작위성을 결론짓지 않는 이유입니다."
+        )
+
+
 def page_portfolio():
     st.title("💼 포트폴리오 생성 & 정확 확률")
     df = load_history_df()
@@ -402,6 +458,7 @@ PAGES = {
     "개요": page_overview,
     "통계 분석": page_statistics,
     "확률 엔진": page_probability,
+    "🔬 정밀 통계 검증": page_randomness,
     "Monte Carlo": page_simulation,
     "백테스트": page_backtest,
 }
