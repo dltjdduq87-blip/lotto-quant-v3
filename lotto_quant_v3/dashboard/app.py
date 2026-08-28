@@ -346,7 +346,11 @@ def page_portfolio():
     st.title("💼 포트폴리오 생성 & 정확 확률")
     df = load_history_df()
     mode = st.radio("생성 방식", ["균등 랜덤 (baseline)", "빈도 가중 (V3)", "분산 최적화 (V3 optimizer)"])
-    seed = st.number_input("시드 (재현용, 비워도 됨)", value=0, step=1)
+
+    use_fixed_seed = st.checkbox("시드 고정 (재현용 -- 끄면 매번 새로운 무작위 번호)", value=False)
+    seed = None
+    if use_fixed_seed:
+        seed = int(st.number_input("시드 값", value=0, step=1))
 
     weights = None
     if mode != "균등 랜덤 (baseline)" and df is not None:
@@ -354,9 +358,9 @@ def page_portfolio():
 
     if st.button("5게임 생성"):
         if mode == "분산 최적화 (V3 optimizer)":
-            tickets = optimizer.optimize_portfolio(weights=weights, seed=int(seed))
+            tickets = optimizer.optimize_portfolio(weights=weights, seed=seed)
         else:
-            tickets = generator.generate_portfolio(weights=weights, seed=int(seed))
+            tickets = generator.generate_portfolio(weights=weights, seed=seed)
         st.session_state["portfolio"] = tickets
 
     tickets = st.session_state.get("portfolio")
