@@ -45,6 +45,87 @@ def ball_color(n: int) -> str:
     return "#333333"
 
 
+# Validated dark-mode palette (dataviz skill reference instance -- dark column).
+# Chart chrome/ink and the categorical-slot-1 blue as the sequential/accent hue.
+VIZ = {
+    "surface": "#1a1a19",       # chart surface
+    "page": "#0d0d0d",          # page plane
+    "ink": "#ffffff",           # primary ink
+    "ink_muted": "#c3c2b7",     # secondary ink
+    "axis_muted": "#898781",    # axis/label ink
+    "grid": "#2c2c2a",          # hairline gridline
+    "accent": "#3987e5",        # categorical slot 1 (blue), sequential hue
+    "accent_soft": "#69c8f2",
+    "good": "#0ca30c",          # status: good
+    "critical": "#e66767",      # dark diverging red pole / status accent
+}
+
+
+def inject_custom_css():
+    st.markdown(f"""
+    <style>
+    .stApp {{ background: {VIZ['page']}; }}
+    [data-testid="stMetric"] {{
+        background: {VIZ['surface']};
+        border: 1px solid rgba(255,255,255,0.10);
+        border-radius: 10px;
+        padding: 14px 16px;
+    }}
+    [data-testid="stMetricLabel"] {{ color: {VIZ['ink_muted']}; }}
+    [data-testid="stTabs"] button[role="tab"] {{
+        font-weight: 600;
+        color: {VIZ['ink_muted']};
+    }}
+    [data-testid="stTabs"] button[aria-selected="true"] {{
+        color: {VIZ['ink']};
+        border-bottom-color: {VIZ['accent']} !important;
+    }}
+    .stButton > button, .stDownloadButton > button {{
+        border-radius: 8px;
+        border: 1px solid rgba(255,255,255,0.14);
+    }}
+    .stButton > button[kind="primary"] {{
+        background: {VIZ['accent']};
+        border: none;
+    }}
+    .lqv-hero {{
+        background: linear-gradient(135deg, {VIZ['surface']} 0%, #12233b 100%);
+        border: 1px solid rgba(255,255,255,0.08);
+        border-radius: 14px;
+        padding: 22px 26px;
+        margin-bottom: 8px;
+    }}
+    .lqv-hero h1 {{
+        margin: 0 0 4px 0;
+        font-size: 1.7rem;
+        background: linear-gradient(90deg, {VIZ['ink']}, {VIZ['accent_soft']});
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+    }}
+    .lqv-hero p {{ margin: 0; color: {VIZ['ink_muted']}; font-size: 0.92rem; }}
+    hr {{ border-color: {VIZ['grid']} !important; }}
+    </style>
+    """, unsafe_allow_html=True)
+
+
+def styled_layout(fig: go.Figure, title: str, xaxis_title: str = "", yaxis_title: str = "") -> go.Figure:
+    """Apply the shared dark chart theme (surface, grid, ink) to a plotly figure."""
+    fig.update_layout(
+        title=title,
+        xaxis_title=xaxis_title,
+        yaxis_title=yaxis_title,
+        paper_bgcolor=VIZ["surface"],
+        plot_bgcolor=VIZ["surface"],
+        font=dict(color=VIZ["ink_muted"]),
+        title_font=dict(color=VIZ["ink"]),
+        xaxis=dict(gridcolor=VIZ["grid"], zerolinecolor=VIZ["grid"], color=VIZ["axis_muted"]),
+        yaxis=dict(gridcolor=VIZ["grid"], zerolinecolor=VIZ["grid"], color=VIZ["axis_muted"]),
+        margin=dict(t=48, l=10, r=10, b=10),
+    )
+    return fig
+
+
 def render_balls(numbers, bonus: int | None = None, size: int = 46) -> str:
     def ball_html(n, extra_border=""):
         return (
@@ -116,34 +197,35 @@ def render_draw_machine(my_numbers: list[int], drawn_main: list[int], bonus: int
   .machine-wrap {{ font-family: -apple-system, "Segoe UI", sans-serif; display:flex; flex-direction:column;
     align-items:center; padding:10px 0 0; }}
   .drum {{ position:relative; width:290px; height:290px; border-radius:50%;
-    background: radial-gradient(circle at 32% 28%, rgba(255,255,255,.95), rgba(200,228,255,.35) 42%, rgba(140,170,210,.28) 100%);
-    border: 9px solid #8a94a3; box-shadow: 0 8px 22px rgba(0,0,0,.35), inset 0 0 30px rgba(255,255,255,.5);
+    background: radial-gradient(circle at 32% 28%, rgba(120,160,220,.35), rgba(40,60,90,.55) 42%, rgba(20,25,35,.85) 100%);
+    border: 9px solid #4a5568; box-shadow: 0 8px 22px rgba(0,0,0,.6), inset 0 0 30px rgba(120,160,220,.18);
     overflow: hidden; transition: transform 2.1s cubic-bezier(.36,.07,.19,.97); }}
   .drum.spinning {{ transform: rotate(1080deg); }}
   .drum-ball {{ position:absolute; border-radius:50%; color:#fff; font-weight:700;
     font-size:10px; display:flex; align-items:center; justify-content:center;
-    box-shadow: 0 1px 2px rgba(0,0,0,.4), inset -2px -2px 3px rgba(0,0,0,.25), inset 2px 2px 3px rgba(255,255,255,.5);
+    box-shadow: 0 1px 2px rgba(0,0,0,.5), inset -2px -2px 3px rgba(0,0,0,.3), inset 2px 2px 3px rgba(255,255,255,.35);
     animation-name: jitter; animation-iteration-count: infinite; animation-timing-function: ease-in-out; }}
   @keyframes jitter {{ 0%,100% {{ transform: translate(0,0); }} 50% {{ transform: translate(1.5px,-2px); }} }}
-  .stand {{ width:14px; height:34px; background: linear-gradient(#9aa4b2,#6b7280); margin-top:-4px; }}
-  .base {{ width:150px; height:14px; border-radius:8px; background: linear-gradient(#7b8593,#5b6472);
-    box-shadow: 0 4px 8px rgba(0,0,0,.3); margin-top:-2px; }}
-  .machine-label {{ margin-top:10px; font-weight:800; letter-spacing:2px; color:#345; font-size:13px; }}
+  .stand {{ width:14px; height:34px; background: linear-gradient(#5b6472,#2c333d); margin-top:-4px; }}
+  .base {{ width:150px; height:14px; border-radius:8px; background: linear-gradient(#4a5568,#232830);
+    box-shadow: 0 4px 8px rgba(0,0,0,.5); margin-top:-2px; }}
+  .machine-label {{ margin-top:10px; font-weight:800; letter-spacing:2px; color:#c3c2b7; font-size:13px; }}
   .trays {{ display:flex; align-items:center; gap:14px; margin-top:22px; flex-wrap:wrap; justify-content:center; }}
   .tray-main, .tray-bonus {{ display:flex; gap:8px; }}
-  .tray-slot {{ width:40px; height:40px; border-radius:50%; border:2px dashed #c3ccd6; }}
+  .tray-slot {{ width:40px; height:40px; border-radius:50%; border:2px dashed #3a3f4a; }}
   .tray-ball {{ width:40px; height:40px; border-radius:50%; color:#fff; font-weight:700; font-size:15px;
-    display:flex; align-items:center; justify-content:center; box-shadow:0 3px 6px rgba(0,0,0,.35);
+    display:flex; align-items:center; justify-content:center; box-shadow:0 3px 6px rgba(0,0,0,.5);
     animation: pop .5s cubic-bezier(.34,1.56,.64,1); }}
-  .tray-ball.match {{ box-shadow: 0 0 0 3px #ffd700, 0 3px 8px rgba(0,0,0,.4); }}
+  .tray-ball.match {{ box-shadow: 0 0 0 3px #eda100, 0 3px 8px rgba(0,0,0,.5); }}
   @keyframes pop {{ 0% {{ transform: translateY(-70px) scale(.3); opacity:0; }}
     60% {{ transform: translateY(6px) scale(1.12); opacity:1; }} 100% {{ transform: translateY(0) scale(1); }} }}
-  .plus-sep {{ font-size:20px; color:#889; font-weight:700; }}
-  .result-box {{ margin-top:22px; padding:14px 26px; border-radius:12px; background:#f1f3f6; color:#334;
+  .plus-sep {{ font-size:20px; color:#898781; font-weight:700; }}
+  .result-box {{ margin-top:22px; padding:14px 26px; border-radius:12px; background:#1a1a19; color:#c3c2b7;
+    border: 1px solid rgba(255,255,255,0.10);
     font-size:17px; font-weight:700; opacity:0; transform:translateY(8px); transition: all .5s ease; text-align:center; }}
   .result-box.show {{ opacity:1; transform:translateY(0); }}
-  .result-box.won {{ background: linear-gradient(135deg,#fff6d8,#ffe9a8); color:#8a6400;
-    box-shadow: 0 4px 14px rgba(255,200,0,.35); }}
+  .result-box.won {{ background: linear-gradient(135deg,#3a2f0a,#4a3a08); color:#fab219;
+    box-shadow: 0 4px 14px rgba(250,178,25,.25); border-color: rgba(250,178,25,.35); }}
   .confetti {{ position:absolute; font-size:18px; animation: fall 1.6s ease-in forwards; }}
   @keyframes fall {{ 0% {{ transform: translateY(-10px) rotate(0deg); opacity:1; }}
     100% {{ transform: translateY(160px) rotate(360deg); opacity:0; }} }}
@@ -226,7 +308,11 @@ def load_history_df():
 
 
 def page_overview():
-    st.title("🎱 LOTTO 6/45 QUANT V3")
+    st.markdown(
+        '<div class="lqv-hero"><h1>🎱 LOTTO 6/45 QUANT V3</h1>'
+        '<p>확률 계산 · 포트폴리오 분산 · 통계적 유의성 검증 -- 당첨 예측 도구가 아닙니다.</p></div>',
+        unsafe_allow_html=True,
+    )
     df = load_history_df()
     if df is None:
         st.warning("DB에 데이터가 없습니다. 사이드바에서 '데이터 갱신'을 먼저 실행하세요.")
@@ -252,7 +338,7 @@ def page_statistics():
         return
     freq = analysis.number_frequency(df)
     fig = go.Figure(go.Bar(x=freq.index, y=freq.values, marker_color=[ball_color(n) for n in freq.index]))
-    fig.update_layout(title="번호별 출현 빈도", xaxis_title="번호", yaxis_title="출현 횟수")
+    styled_layout(fig, "번호별 출현 빈도", "번호", "출현 횟수")
     st.plotly_chart(fig, width="stretch")
 
     col1, col2 = st.columns(2)
@@ -268,8 +354,8 @@ def page_statistics():
     st.dataframe(gaps.dropna().sort_values(ascending=False).head(10).rename("미출현 회차"))
 
     sums = analysis.sum_distribution(df)
-    fig2 = go.Figure(go.Histogram(x=sums, nbinsx=30))
-    fig2.update_layout(title=f"번호 합계 분포 (평균={sums.mean():.1f}, 표준편차={sums.std():.1f})")
+    fig2 = go.Figure(go.Histogram(x=sums, nbinsx=30, marker_color=VIZ["accent"]))
+    styled_layout(fig2, f"번호 합계 분포 (평균={sums.mean():.1f}, 표준편차={sums.std():.1f})", "합계", "빈도")
     st.plotly_chart(fig2, width="stretch")
 
 
@@ -389,8 +475,8 @@ def page_simulation():
         with st.spinner(f"{n_draws:,}회 추첨 시뮬레이션 중..."):
             mc = monte_carlo.simulate_portfolio(tickets, n_draws=n_draws, seed=1)
         st.json(mc["probability_at_least"])
-        fig = go.Figure(go.Bar(x=list(mc["counts"].keys()), y=list(mc["counts"].values())))
-        fig.update_layout(title="최고 적중 개수 분포", xaxis_title="일치 개수", yaxis_title="횟수")
+        fig = go.Figure(go.Bar(x=list(mc["counts"].keys()), y=list(mc["counts"].values()), marker_color=VIZ["accent"]))
+        styled_layout(fig, "최고 적중 개수 분포", "일치 개수", "횟수")
         st.plotly_chart(fig, width="stretch")
 
 
@@ -437,15 +523,16 @@ def page_noise_check():
         fig.add_trace(go.Bar(
             x=[str(r["ticket"]) for r in top10],
             y=[r["mean_matches"] for r in top10],
-            error_y=dict(type="data", array=[result["expected_noise_std"]] * len(top10)),
-            marker_color="#69c8f2",
+            error_y=dict(type="data", array=[result["expected_noise_std"]] * len(top10), color=VIZ["ink_muted"]),
+            marker_color=VIZ["accent"],
         ))
-        fig.add_hline(y=result["theoretical_mean"], line_dash="dash", line_color="#ff7272",
-                       annotation_text="이론값 0.8")
-        fig.update_layout(
-            title="상위 10개 조합 (오차막대 = ±1 표준오차, 이론선과 겹치면 유의미하지 않음)",
-            xaxis_title="조합", yaxis_title="평균 적중 개수", xaxis_tickangle=-45,
+        fig.add_hline(y=result["theoretical_mean"], line_dash="dash", line_color=VIZ["critical"],
+                       annotation_text="이론값 0.8", annotation_font_color=VIZ["critical"])
+        styled_layout(
+            fig, "상위 10개 조합 (오차막대 = ±1 표준오차, 이론선과 겹치면 유의미하지 않음)",
+            "조합", "평균 적중 개수",
         )
+        fig.update_layout(xaxis_tickangle=-45)
         st.plotly_chart(fig, width="stretch")
 
         st.dataframe(pd.DataFrame([
@@ -557,6 +644,7 @@ def sidebar_data_refresh():
 
 
 def main():
+    inject_custom_css()
     sidebar_data_refresh()
     # Tabs (not a sidebar radio) so navigation is visible in the main body on
     # mobile too -- Streamlit auto-collapses the sidebar on narrow viewports,
