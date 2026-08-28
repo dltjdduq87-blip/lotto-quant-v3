@@ -4,3 +4,10 @@ __pycache__/
 venv/
 *.xlsx
 .claude/launch.json
+
+# PyInstaller exe build artifacts (blocked by Smart App Control on this
+# machine -- kept locally only, see 대시보드_실행.bat for the working launcher)
+*.spec
+build/
+dist/
+launcher.py

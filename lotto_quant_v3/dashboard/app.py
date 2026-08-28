@@ -24,6 +24,7 @@ from lotto_quant_v3.data import db, news_search
 from lotto_quant_v3.optimization import optimizer
 from lotto_quant_v3.portfolio import generator, probability
 from lotto_quant_v3.probability import engine as prob_engine
+from lotto_quant_v3.simulation import monte_carlo
 from lotto_quant_v3.statistics import analysis, randomness_tests, significance
 
 st.set_page_config(page_title="LOTTO 6/45 QUANT V3", page_icon="🎱", layout="wide")
@@ -252,7 +253,7 @@ def page_statistics():
     freq = analysis.number_frequency(df)
     fig = go.Figure(go.Bar(x=freq.index, y=freq.values, marker_color=[ball_color(n) for n in freq.index]))
     fig.update_layout(title="번호별 출현 빈도", xaxis_title="번호", yaxis_title="출현 횟수")
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
     col1, col2 = st.columns(2)
     with col1:
@@ -269,7 +270,7 @@ def page_statistics():
     sums = analysis.sum_distribution(df)
     fig2 = go.Figure(go.Histogram(x=sums, nbinsx=30))
     fig2.update_layout(title=f"번호 합계 분포 (평균={sums.mean():.1f}, 표준편차={sums.std():.1f})")
-    st.plotly_chart(fig2, use_container_width=True)
+    st.plotly_chart(fig2, width="stretch")
 
 
 def page_probability():
@@ -385,13 +386,78 @@ def page_simulation():
         return
     n_draws = st.select_slider("시뮬레이션 추첨 횟수", options=[100_000, 300_000, 1_000_000], value=100_000)
     if st.button("시뮬레이션 실행"):
-        from lotto_quant_v3.simulation import monte_carlo
         with st.spinner(f"{n_draws:,}회 추첨 시뮬레이션 중..."):
             mc = monte_carlo.simulate_portfolio(tickets, n_draws=n_draws, seed=1)
         st.json(mc["probability_at_least"])
         fig = go.Figure(go.Bar(x=list(mc["counts"].keys()), y=list(mc["counts"].values())))
         fig.update_layout(title="최고 적중 개수 분포", xaxis_title="일치 개수", yaxis_title="횟수")
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
+
+
+def page_noise_check():
+    st.title("⚖️ 조합 비교 (신호 vs 노이즈)")
+    st.caption(
+        "여러 조합을 대량 시뮬레이션으로 직접 경쟁시켜서, '가장 잘 맞는 조합'이 "
+        "실제로 존재하는지 이 자리에서 검증합니다. 로또가 공정하다면 모든 조합의 "
+        "이론적 기대 적중 개수는 정확히 같아야 하고 (6×6/45 = 0.8개), 관측되는 "
+        "차이는 표본오차(노이즈)로 전부 설명되어야 합니다."
+    )
+
+    n_draws = st.select_slider(
+        "시뮬레이션 추첨 횟수", options=[500_000, 1_000_000, 2_000_000, 5_000_000, 10_000_000, 20_000_000],
+        value=2_000_000,
+    )
+    n_candidates = st.slider("비교할 조합 개수", 10, 150, 50)
+
+    my_portfolio = st.session_state.get("portfolio") or []
+    include_mine = False
+    if my_portfolio:
+        include_mine = st.checkbox(f"'번호 생성' 탭에서 만든 내 {len(my_portfolio)}게임도 같이 비교", value=True)
+
+    if st.button("⚖️ 비교 실행"):
+        candidates = generator.generate_portfolio(size=n_candidates, seed=None)
+        if include_mine:
+            candidates = list(dict.fromkeys(list(my_portfolio) + candidates))  # dedupe, keep order
+        with st.spinner(f"{n_draws:,}회 × {len(candidates)}개 조합 동시 채점 중..."):
+            result = monte_carlo.compare_candidates(candidates, n_draws=n_draws, seed=None)
+
+        c1, c2, c3 = st.columns(3)
+        c1.metric("이론적 기대 적중", f"{result['theoretical_mean']:.4f}")
+        c2.metric("후보 간 표준편차", f"{result['std_across_candidates']:.6f}")
+        c3.metric("순수 노이즈 예측치", f"{result['expected_noise_std']:.6f}")
+
+        if result["max_abs_z"] < 3.0:
+            st.success(f"✅ {result['verdict']} (최대 |z| = {result['max_abs_z']:.2f})")
+        else:
+            st.warning(f"⚠️ {result['verdict']} (최대 |z| = {result['max_abs_z']:.2f})")
+
+        ranked = result["ranked"]
+        top10 = ranked[:10]
+        fig = go.Figure()
+        fig.add_trace(go.Bar(
+            x=[str(r["ticket"]) for r in top10],
+            y=[r["mean_matches"] for r in top10],
+            error_y=dict(type="data", array=[result["expected_noise_std"]] * len(top10)),
+            marker_color="#69c8f2",
+        ))
+        fig.add_hline(y=result["theoretical_mean"], line_dash="dash", line_color="#ff7272",
+                       annotation_text="이론값 0.8")
+        fig.update_layout(
+            title="상위 10개 조합 (오차막대 = ±1 표준오차, 이론선과 겹치면 유의미하지 않음)",
+            xaxis_title="조합", yaxis_title="평균 적중 개수", xaxis_tickangle=-45,
+        )
+        st.plotly_chart(fig, width="stretch")
+
+        st.dataframe(pd.DataFrame([
+            {"순위": r["rank"], "조합": str(r["ticket"]), "평균적중": round(r["mean_matches"], 6),
+             "z (이론값 대비)": round(r["z_vs_theoretical"], 2)}
+            for r in ranked
+        ]), width="stretch", hide_index=True)
+
+        st.caption(
+            "재현성 확인: 이 버튼을 다시 누르면 (매번 새 시드로 돌기 때문에) 1위 조합이 "
+            "바뀌는 걸 볼 수 있습니다 -- 진짜 신호였다면 순위가 안정적으로 유지되어야 합니다."
+        )
 
 
 def page_backtest():
@@ -464,6 +530,7 @@ PAGES = {
     "확률 엔진": page_probability,
     "🔬 정밀 통계 검증": page_randomness,
     "Monte Carlo": page_simulation,
+    "⚖️ 조합 비교": page_noise_check,
     "백테스트": page_backtest,
 }
 

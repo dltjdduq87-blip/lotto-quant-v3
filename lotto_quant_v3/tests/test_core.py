@@ -13,6 +13,7 @@ from lotto_quant_v3.data import news_search
 from lotto_quant_v3.data.excel_import import round_to_date
 from lotto_quant_v3.portfolio import generator, probability
 from lotto_quant_v3.probability import engine
+from lotto_quant_v3.simulation import monte_carlo
 from lotto_quant_v3.statistics import randomness_tests
 
 
@@ -157,6 +158,31 @@ class TestRandomnessTestsPower(unittest.TestCase):
         summary = randomness_tests.summarize_randomness(df)
         self.assertEqual(summary["n_draws_tested"], 500)
         self.assertIn("overall_conclusion", summary)
+
+
+class TestMonteCarloCompareCandidates(unittest.TestCase):
+    def test_means_converge_to_theoretical_value(self):
+        candidates = generator.generate_portfolio(size=20, seed=10)
+        result = monte_carlo.compare_candidates(candidates, n_draws=500_000, seed=11)
+        self.assertAlmostEqual(result["mean_across_candidates"], result["theoretical_mean"], delta=0.01)
+
+    def test_no_ticket_beats_another_beyond_noise_in_expectation(self):
+        # Every ticket has the same theoretical mean by symmetry -- with a
+        # reasonable candidate count and draw count, no z-score should blow
+        # past a generous sanity bound (this isn't a tight statistical
+        # claim, just a smoke test that the scorer isn't systematically
+        # biased toward any particular ticket).
+        candidates = generator.generate_portfolio(size=15, seed=20)
+        result = monte_carlo.compare_candidates(candidates, n_draws=500_000, seed=21)
+        self.assertLess(result["max_abs_z"], 5.0)
+
+    def test_ranked_output_covers_all_candidates_exactly_once(self):
+        candidates = generator.generate_portfolio(size=10, seed=30)
+        result = monte_carlo.compare_candidates(candidates, n_draws=200_000, seed=31)
+        ranks = sorted(r["rank"] for r in result["ranked"])
+        self.assertEqual(ranks, list(range(1, 11)))
+        tickets_seen = {r["ticket"] for r in result["ranked"]}
+        self.assertEqual(tickets_seen, set(candidates))
 
 
 if __name__ == "__main__":
