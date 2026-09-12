@@ -29,3 +29,8 @@ REQUEST_TIMEOUT = 15
 
 # First draw was 2002-12-07 (round 1), weekly on Saturdays.
 FIRST_DRAW_DATE = "2002-12-07"
+
+# Fallback premium-unlock code, used only if `premium_access_code` isn't set in
+# .streamlit/secrets.toml. Change the secret (not this default) before selling
+# access -- this file is committed to the repo.
+PREMIUM_ACCESS_CODE_DEFAULT = "LOTTO-PREMIUM-2026"

@@ -20,6 +20,7 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from lotto_quant_v3.backtest import walkforward
+from lotto_quant_v3.config import settings
 from lotto_quant_v3.data import db, news_search
 from lotto_quant_v3.optimization import optimizer
 from lotto_quant_v3.portfolio import generator, probability
@@ -307,6 +308,89 @@ def load_history_df():
     return analysis.draws_to_frame(draws)
 
 
+def _configured_premium_code() -> str:
+    try:
+        return st.secrets.get("premium_access_code", settings.PREMIUM_ACCESS_CODE_DEFAULT)
+    except Exception:
+        return settings.PREMIUM_ACCESS_CODE_DEFAULT
+
+
+def is_premium() -> bool:
+    return bool(st.session_state.get("premium_unlocked"))
+
+
+def premium_locked_notice(feature_name: str):
+    st.info(
+        f"🔒 **{feature_name}**은(는) 프리미엄 기능입니다. "
+        "🏠 '홈' 탭에서 이용권을 신청하거나, 이미 코드가 있다면 왼쪽 사이드바에서 입력해주세요."
+    )
+
+
+def page_home():
+    st.markdown(
+        '<div class="lqv-hero"><h1>🎱 LOTTO 6/45 QUANT V3</h1>'
+        '<p>확률 계산 · 포트폴리오 분산 · 통계적 유의성 검증 -- "당첨 예측"이 아니라 '
+        '"근거 있는 번호 관리" 도구입니다.</p></div>',
+        unsafe_allow_html=True,
+    )
+
+    st.markdown("### 무엇을 할 수 있나요?")
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.markdown("**📊 통계 & 확률**")
+        st.caption("빈도, 미출현 회차, 합계 분포부터 C(45,6) 정확 확률 계산까지 -- 전부 무료.")
+    with c2:
+        st.markdown("**💼 포트폴리오 관리**")
+        st.caption("중복 없는 5게임 생성과 정확 당첨확률(전수조사). 분산 최적화는 프리미엄.")
+    with c3:
+        st.markdown("**🔬 검증 도구**")
+        st.caption("Monte Carlo, 조합 비교, Walk-forward 백테스트로 '진짜 신호'와 노이즈를 구분합니다.")
+
+    st.divider()
+    st.markdown("### 요금제")
+    fc, pc = st.columns(2)
+    with fc:
+        st.markdown("#### 무료")
+        st.markdown("- 통계 분석 전체\n- 확률 엔진\n- 균등/빈도가중 번호 생성\n- 추첨 플레이 모드")
+        st.caption("가입 없이 바로 이용 가능")
+    with pc:
+        st.markdown("#### ✨ 프리미엄")
+        st.markdown(
+            "- 분산 최적화 포트폴리오\n- Monte Carlo 시뮬레이션\n"
+            "- 조합 비교 (신호 vs 노이즈)\n- Walk-forward 백테스트"
+        )
+        st.caption("이용권 코드로 잠금 해제")
+
+    st.divider()
+    if is_premium():
+        st.success("✅ 프리미엄 이용권이 활성화되어 있습니다. 모든 탭을 자유롭게 이용하세요.")
+    else:
+        st.markdown("### 프리미엄 이용권 신청")
+        st.caption(
+            "결제 자동화는 아직 준비 중입니다. 이메일을 남겨주시면 이용 안내(계좌이체/카카오페이 등)와 "
+            "이용권 코드를 순서대로 보내드립니다."
+        )
+        with st.form("premium_waitlist_form"):
+            email = st.text_input("이메일 주소")
+            note = st.text_input("메모 (선택)", placeholder="예: 카카오톡 아이디, 문의사항")
+            submitted = st.form_submit_button("신청하기", type="primary")
+        if submitted:
+            if "@" not in email:
+                st.error("올바른 이메일 주소를 입력해주세요.")
+            else:
+                db.init_db()
+                db.add_lead(email.strip(), note.strip())
+                st.success("신청이 접수되었습니다! 안내 메일을 곧 보내드릴게요.")
+        st.caption("이미 이용권 코드를 받으셨다면, 왼쪽 사이드바 '✨ 프리미엄'에서 입력하세요.")
+
+    st.divider()
+    st.caption(
+        "⚠️ 이 도구는 당첨 번호를 예측하지 않습니다. 로또 추첨은 독립적인 균등분포 사건이며, "
+        "Walk-forward 백테스트 결과 빈도 가중 포트폴리오는 랜덤 대비 통계적으로 유의한 우위가 "
+        "없었습니다 (p≈0.32). 이 서비스는 번호 '분산 관리'와 '통계적 검증' 도구로 제공됩니다."
+    )
+
+
 def page_overview():
     st.markdown(
         '<div class="lqv-hero"><h1>🎱 LOTTO 6/45 QUANT V3</h1>'
@@ -432,7 +516,10 @@ def page_randomness():
 def page_portfolio():
     st.title("💼 포트폴리오 생성 & 정확 확률")
     df = load_history_df()
-    mode = st.radio("생성 방식", ["균등 랜덤 (baseline)", "빈도 가중 (V3)", "분산 최적화 (V3 optimizer)"])
+    mode = st.radio(
+        "생성 방식",
+        ["균등 랜덤 (baseline)", "빈도 가중 (V3)", "✨ 분산 최적화 (V3 optimizer, 프리미엄)"],
+    )
 
     use_fixed_seed = st.checkbox("시드 고정 (재현용 -- 끄면 매번 새로운 무작위 번호)", value=False)
     seed = None
@@ -443,8 +530,12 @@ def page_portfolio():
     if mode != "균등 랜덤 (baseline)" and df is not None:
         weights = (analysis.number_frequency(df).values + 1).astype(float)
 
-    if st.button("5게임 생성"):
-        if mode == "분산 최적화 (V3 optimizer)":
+    is_optimizer_mode = mode.startswith("✨ 분산 최적화")
+    if is_optimizer_mode and not is_premium():
+        premium_locked_notice("분산 최적화 포트폴리오")
+
+    if st.button("5게임 생성", disabled=is_optimizer_mode and not is_premium()):
+        if is_optimizer_mode:
             tickets = optimizer.optimize_portfolio(weights=weights, seed=seed)
         else:
             tickets = generator.generate_portfolio(weights=weights, seed=seed)
@@ -466,6 +557,9 @@ def page_portfolio():
 
 def page_simulation():
     st.title("🔁 Monte Carlo 시뮬레이션")
+    if not is_premium():
+        premium_locked_notice("Monte Carlo 시뮬레이션")
+        return
     tickets = st.session_state.get("portfolio")
     if not tickets:
         st.info("먼저 '포트폴리오' 탭에서 5게임을 생성하세요.")
@@ -488,6 +582,9 @@ def page_noise_check():
         "이론적 기대 적중 개수는 정확히 같아야 하고 (6×6/45 = 0.8개), 관측되는 "
         "차이는 표본오차(노이즈)로 전부 설명되어야 합니다."
     )
+    if not is_premium():
+        premium_locked_notice("조합 비교")
+        return
 
     n_draws = st.select_slider(
         "시뮬레이션 추첨 횟수", options=[500_000, 1_000_000, 2_000_000, 5_000_000, 10_000_000, 20_000_000],
@@ -549,6 +646,9 @@ def page_noise_check():
 
 def page_backtest():
     st.title("⏮ Walk-forward 백테스트 & 통계적 유의성 검증")
+    if not is_premium():
+        premium_locked_notice("Walk-forward 백테스트")
+        return
     draws = db.get_all_draws()
     if len(draws) < 60:
         st.warning("백테스트에 충분한 데이터가 없습니다 (최소 약 60회차 필요).")
@@ -610,16 +710,33 @@ def page_play():
 
 
 PAGES = {
+    "🏠 홈": page_home,
     "🎰 추첨 플레이": page_play,
     "💼 번호 생성": page_portfolio,
     "개요": page_overview,
     "통계 분석": page_statistics,
     "확률 엔진": page_probability,
     "🔬 정밀 통계 검증": page_randomness,
-    "Monte Carlo": page_simulation,
-    "⚖️ 조합 비교": page_noise_check,
-    "백테스트": page_backtest,
+    "✨ Monte Carlo": page_simulation,
+    "✨ 조합 비교": page_noise_check,
+    "✨ 백테스트": page_backtest,
 }
+
+
+def sidebar_premium():
+    st.sidebar.header("✨ 프리미엄")
+    if is_premium():
+        st.sidebar.success("이용권 활성화됨")
+        return
+    code = st.sidebar.text_input("이용권 코드", type="password", key="premium_code_input")
+    if st.sidebar.button("코드 확인"):
+        if code.strip() and code.strip() == _configured_premium_code():
+            st.session_state["premium_unlocked"] = True
+            st.sidebar.success("프리미엄이 활성화되었습니다!")
+            st.rerun()
+        else:
+            st.sidebar.error("코드가 올바르지 않습니다.")
+    st.sidebar.caption("이용권이 없으신가요? '🏠 홈' 탭에서 신청하세요.")
 
 
 def sidebar_data_refresh():
@@ -645,6 +762,7 @@ def sidebar_data_refresh():
 
 def main():
     inject_custom_css()
+    sidebar_premium()
     sidebar_data_refresh()
     # Tabs (not a sidebar radio) so navigation is visible in the main body on
     # mobile too -- Streamlit auto-collapses the sidebar on narrow viewports,

@@ -80,7 +80,22 @@ python -m unittest lotto_quant_v3.tests.test_core -v
 | `optimization/optimizer.py` | 번호 커버리지 분산 최적화 (예측이 아닌 분산) |
 | `simulation/monte_carlo.py` | 최대 100만 회 몬테카를로 시뮬레이션 |
 | `backtest/walkforward.py` | Walk-forward 백테스트 (미래 데이터 누출 방지 assert 포함) |
-| `dashboard/app.py` | Streamlit 대시보드 + 🎰 추첨 플레이 모드 |
+| `dashboard/app.py` | Streamlit 대시보드 + 🎰 추첨 플레이 모드 + 🏠 홈(랜딩/판매) 탭 |
+
+## 프리미엄 이용권 (판매 기능)
+
+대시보드 "🏠 홈" 탭은 랜딩 페이지 역할을 합니다: 무료/프리미엄 기능을 안내하고,
+방문자가 이메일을 남기면 `leads` 테이블(SQLite)에 저장됩니다. 아직 결제 자동화는
+붙어있지 않으므로, 운영자가 수동으로 입금 확인 후 이용권 코드를 이메일로 보내주는
+방식입니다.
+
+- **신청자 확인:** `python -m lotto_quant_v3.main --show-leads`
+- **이용권 코드 설정:** `.streamlit/secrets.toml`에 `premium_access_code = "원하는코드"`
+  를 넣으면 기본값(`config/settings.py`의 `PREMIUM_ACCESS_CODE_DEFAULT`) 대신 이 값이
+  쓰입니다. 코드가 유출되면 이 값만 바꾸면 즉시 무효화됩니다.
+- **프리미엄 전용 기능:** 분산 최적화 포트폴리오, Monte Carlo 시뮬레이션, 조합 비교,
+  Walk-forward 백테스트. 나머지(통계 분석, 확률 엔진, 빈도가중 번호 생성, 추첨
+  플레이)는 항상 무료입니다.
 
 ## 알려진 한계
 

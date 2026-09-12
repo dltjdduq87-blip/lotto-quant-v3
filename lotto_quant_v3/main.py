@@ -88,7 +88,17 @@ def main():
     parser.add_argument("--news-min-sources", type=int, default=2,
                          help="신규 회차 확정에 필요한 최소 독립 언론사 수")
     parser.add_argument("--min-history", type=int, default=52, help="백테스트 최소 학습 회차 수")
+    parser.add_argument("--show-leads", action="store_true",
+                         help="대시보드 홈 탭에서 접수된 프리미엄 신청 이메일 목록 출력 후 종료")
     args = parser.parse_args()
+    if args.show_leads:
+        db.init_db()
+        leads = db.get_leads()
+        if not leads:
+            print("접수된 신청이 없습니다.")
+        for lead in leads:
+            print(f"{lead['created_at']}  {lead['email']}  {lead['note'] or ''}")
+        return
     run_pipeline(args.excel, args.skip_fetch, args.min_history, args.news_min_sources)
 
 
