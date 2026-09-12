@@ -15,12 +15,6 @@ CREATE TABLE IF NOT EXISTS draws (
     source TEXT NOT NULL,
     verified INTEGER NOT NULL DEFAULT 0
 );
-CREATE TABLE IF NOT EXISTS leads (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    email TEXT NOT NULL,
-    note TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
 """
 
 
@@ -38,7 +32,7 @@ def connect():
 
 def init_db():
     with connect() as conn:
-        conn.executescript(SCHEMA)
+        conn.execute(SCHEMA)
 
 
 def upsert_draw(round_no: int, draw_date: str, numbers: list[int], bonus: int,
@@ -76,15 +70,3 @@ def get_latest_round() -> int | None:
 def count_draws() -> int:
     with connect() as conn:
         return conn.execute("SELECT COUNT(*) FROM draws").fetchone()[0]
-
-
-def add_lead(email: str, note: str = "") -> None:
-    with connect() as conn:
-        conn.execute("INSERT INTO leads (email, note) VALUES (?, ?)", (email, note))
-
-
-def get_leads() -> list[dict]:
-    with connect() as conn:
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute("SELECT * FROM leads ORDER BY created_at DESC").fetchall()
-        return [dict(r) for r in rows]
