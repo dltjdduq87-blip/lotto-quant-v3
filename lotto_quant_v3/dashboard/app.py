@@ -24,6 +24,7 @@ from lotto_quant_v3.data import db, news_search
 from lotto_quant_v3.optimization import optimizer
 from lotto_quant_v3.portfolio import generator, probability
 from lotto_quant_v3.probability import engine as prob_engine
+from lotto_quant_v3.probability import prize_model
 from lotto_quant_v3.simulation import monte_carlo, strategy_lab
 from lotto_quant_v3.statistics import analysis, randomness_tests, significance
 
@@ -299,6 +300,19 @@ def render_draw_machine(my_numbers: list[int], drawn_main: list[int], bonus: int
 """
 
 
+TIER_NAMES = {0: "낙첨", 1: "1등", 2: "2등", 3: "3등", 4: "4등", 5: "5등"}
+
+
+def tier_table(best_tier: dict) -> pd.DataFrame:
+    rows = []
+    for k in range(1, 6):
+        pk = best_tier[k]
+        rows.append({"최고 등수": TIER_NAMES[k], "확률": f"{pk*100:.6f}%",
+                     "약 몇 회에 한 번": f"1 / {1/pk:,.0f}" if pk > 0 else "-"})
+    rows.append({"최고 등수": "낙첨", "확률": f"{best_tier[0]*100:.4f}%", "약 몇 회에 한 번": "-"})
+    return pd.DataFrame(rows)
+
+
 @st.cache_data(ttl=3600)
 def load_history_df():
     draws = db.get_all_draws()
@@ -372,6 +386,28 @@ def page_probability():
         })
     st.table(pd.DataFrame(rows))
 
+    st.subheader("💰 등수별 실제 기대 당첨금 (세전 · 세후)")
+    st.caption(
+        "판매액의 50%가 당첨금 → 4등(5만원)·5등(5천원)을 먼저 주고, 남은 돈을 1등 75% · 2등 12.5% · 3등 12.5%로 "
+        "나눠 그 등수 당첨자끼리 똑같이 나눕니다. 그래서 1~3등 금액은 '같은 회차에 몇 명이 같이 당첨되느냐'에 달려 있고, "
+        "여기서는 그 인원을 확률적으로(포아송) 반영했습니다. 세금: 200만원 이하 비과세, 초과 시 3억까지 22%, 3억 초과분 33%."
+    )
+    sales_eok = st.slider("회차당 판매액 (억원)", 500, 2000, int(prize_model.DEFAULT_SALES_PER_ROUND / 1e8), step=10,
+                          help="2025년 연간 판매액 약 6.2조원 → 회차당 약 1,190억원")
+    model = prize_model.PrizeModel(sales_eok * 1e8)
+    st.dataframe(pd.DataFrame([{
+        "등수": TIER_NAMES[r["tier"]],
+        "회차당 평균 당첨 게임 수": f"{r['expected_winners']:,.1f}",
+        "1게임 기대 당첨금(세전)": f"{r['prize_gross']:,.0f}원",
+        "세후 실수령": f"{r['prize_net']:,.0f}원",
+        "1,000원당 기대값(세후)": f"{r['ev_net']:,.1f}원",
+    } for r in model.table()]), width="stretch", hide_index=True)
+    c1, c2, c3 = st.columns(3)
+    c1.metric("기대 회수율 (세전)", f"{model.expected_return()*100:.1f}%")
+    c2.metric("기대 회수율 (세후)", f"{model.expected_return(net=True)*100:.1f}%")
+    c3.metric("1,000원당 평균 손실 (세후)", f"{(1-model.expected_return(net=True))*1000:,.0f}원")
+    st.caption("판매액이 늘면 1~3등 당첨자 수도 같이 늘어 1게임당 금액은 거의 그대로입니다 — 회수율은 판매액과 무관하게 세전 약 50%.")
+
 
 def page_randomness():
     st.title("🔬 정밀 통계 검증")
@@ -400,7 +436,8 @@ def page_randomness():
             st.subheader("1. 카이제곱 균등성 검정")
             chi2 = result["chi_square_uniformity"]
             st.metric("p-value", f"{chi2['p_value']:.4f}")
-            st.write(f"χ² = {chi2['statistic']:.2f}, dof = {chi2['dof']}")
+            st.write(f"χ² = {chi2['statistic']:.2f}, dof = {chi2['dof']} "
+                     f"(비복원추출 보정 전 {chi2['statistic_uncorrected']:.2f})")
             st.caption(chi2["interpretation"])
 
             st.subheader("3. 자기상관 검정 (lag 1-3)")
@@ -422,11 +459,19 @@ def page_randomness():
             st.caption(ent["interpretation"])
 
         st.divider()
+        st.subheader("다중검정 보정 (Holm)")
         st.caption(
-            "다중검정 보정 참고: 검정 4개를 α=0.05로 각각 돌리면, 데이터가 진짜 무작위여도 "
-            "우연히 하나 이상 기각될 확률은 1-(0.95)^4 ≈ 18.5%입니다. 단일 유의 결과만으로 "
-            "비무작위성을 결론짓지 않는 이유입니다."
+            "검정을 여러 개 돌리면 데이터가 진짜 무작위여도 하나쯤은 우연히 p<0.05가 나올 수 있습니다. "
+            "Holm 보정은 이를 감안해 p-value를 키워서, '하나라도 거짓 경보가 날 확률'을 5% 이하로 묶습니다. "
+            "카이제곱은 한 회차 6개 번호가 중복 없이 뽑힌다는 점(비복원추출)을 반영해 보정했습니다."
         )
+        st.dataframe(pd.DataFrame([{
+            "검정": k, "p-value": round(v, 4), "Holm 보정 p": round(result["p_values_holm"][k], 4),
+            "판정": "기각(이상 징후)" if result["p_values_holm"][k] < 0.05 else "통과",
+        } for k, v in result["p_values_raw"].items()]), width="stretch", hide_index=True)
+        if result.get("bonus_uniformity"):
+            st.caption(f"보너스 번호 균등성: χ² = {result['bonus_uniformity']['statistic']:.2f}, "
+                       f"p = {result['bonus_uniformity']['p_value']:.4f}")
 
 
 def page_portfolio():
@@ -456,12 +501,17 @@ def page_portfolio():
             st.markdown(f"**게임 {i}**", unsafe_allow_html=True)
             st.markdown(render_balls(t, size=36), unsafe_allow_html=True)
 
-        if st.button("이 포트폴리오의 정확 당첨 확률 계산 (전수조사, 약 5~10초)"):
+        if st.button("이 포트폴리오의 정확 당첨 확률 계산 (전수조사, 1초 이내)"):
             with st.spinner("C(45,6) = 8,145,060개 조합 전수 계산 중..."):
                 result = probability.exact_portfolio_distribution(tickets)
-            st.success(f"1등(6개 일치) 확률: {result['jackpot_ways']} / {result['total_draws']:,} "
-                       f"= {result['jackpot_probability']:.10f}")
-            st.json(result["exact_probability_at_least"])
+            c1, c2, c3 = st.columns(3)
+            c1.metric("5등 이상 하나라도", f"{result['any_prize_probability']*100:.3f}%")
+            c2.metric("1등 확률", f"1 / {1/result['jackpot_probability']:,.0f}")
+            c3.metric("번호 겹침으로 잃는 당첨 확률", f"{result['overlap_loss']*100:.3f}%p",
+                      help="게임끼리 번호가 겹치면 같은 추첨에 같이 당첨되거나 같이 떨어져서, "
+                           "'하나라도 당첨될 확률'이 단순 합계보다 줄어듭니다. 기대 당첨금 자체는 변하지 않습니다.")
+            st.dataframe(tier_table(result["best_tier_probability"]), width="stretch", hide_index=True)
+            st.caption("보너스 번호까지 포함해 C(45,6)=8,145,060개 추첨 결과를 전부 계산한 정확값입니다 (표본 아님).")
 
 
 def page_simulation():
@@ -474,7 +524,11 @@ def page_simulation():
     if st.button("시뮬레이션 실행"):
         with st.spinner(f"{n_draws:,}회 추첨 시뮬레이션 중..."):
             mc = monte_carlo.simulate_portfolio(tickets, n_draws=n_draws, seed=1)
-        st.json(mc["probability_at_least"])
+        st.metric("5등 이상 하나라도 당첨된 회차 비율", f"{mc['any_prize_probability']*100:.3f}%")
+        st.dataframe(pd.DataFrame([{
+            "최고 등수": TIER_NAMES[k], "횟수": mc["best_tier_counts"][k],
+            "비율": f"{mc['best_tier_probability'][k]*100:.4f}%",
+        } for k in (1, 2, 3, 4, 5, 0)]), width="stretch", hide_index=True)
         fig = go.Figure(go.Bar(x=list(mc["counts"].keys()), y=list(mc["counts"].values()), marker_color=VIZ["accent"]))
         styled_layout(fig, "최고 적중 개수 분포", "일치 개수", "횟수")
         st.plotly_chart(fig, width="stretch")
@@ -638,6 +692,8 @@ def page_strategy_lab():
                 bar.empty()
                 st.session_state["lab_res"] = res
             res = st.session_state.get("lab_res")
+            if res and "ci_level" not in res:  # result from an older version of this page
+                res = None
             if res:
                 st.write(f"검증 회차 {res['round_range'][0]}~{res['round_range'][1]} ({res['n_rounds']}회) × "
                          f"{res['games']}게임 × 시드 {res['n_repeats']}번")
@@ -645,7 +701,9 @@ def page_strategy_lab():
                     "전략": r["전략"],
                     "5등 이상 당첨률(게임당)": f"{r['5등 이상 당첨률(게임당)']*100:.2f}%",
                     "이론값과 차이(z)": round(r["5등 이상 당첨률 z(이론 대비)"], 2),
-                    "회수율": f"{r['회수율']*100:.1f}%",
+                    "회수율(세전)": f"{r['회수율']*100:.1f}%",
+                    "회수율(세후)": f"{r['회수율(세후)']*100:.1f}%",
+                    "무작위와 다름?": "예" if r["기준과 다르다고 볼 수 있음"] else "아니오",
                     "평균 최고 일치": round(r["평균 최고 일치 개수"], 3),
                     "게임 간 겹친 번호": round(r["게임 간 겹친 번호 수"], 2),
                     "4등": r["등수별 횟수"][4], "3등": r["등수별 횟수"][3], "2등": r["등수별 횟수"][2], "1등": r["등수별 횟수"][1],
@@ -665,8 +723,12 @@ def page_strategy_lab():
                     "읽는 법: '이론값과 차이(z)'가 ±2 안이면 무작위와 구분이 안 되는 수준입니다. "
                     "z는 같은 회차 게임끼리 독립이 아니라는 점을 반영해 회차 단위로 계산했습니다. "
                     "'평균 최고 일치'는 한 회차 5게임 중 가장 많이 맞은 개수의 평균이라, 게임끼리 번호가 덜 겹칠수록 "
-                    "자연히 올라갑니다(예측력이 아니라 번호를 넓게 펼친 효과). 1~3등 상금은 회차마다 달라 "
-                    "대표값(1등 20억, 2등 6천만, 3등 150만)으로 계산했습니다."
+                    "자연히 올라갑니다(예측력이 아니라 번호를 넓게 펼친 효과). '무작위와 다름?'은 여러 전략을 동시에 "
+                    f"비교하는 점을 보정한 {res['ci_level']*100:.1f}% 구간으로 판정합니다. 상금은 판매액 50% 배분 규칙과 "
+                    f"공동 당첨자 수를 반영한 기대값(1등 {res['prizes'][1]/1e8:.1f}억, 2등 {res['prizes'][2]/1e4:,.0f}만, "
+                    f"3등 {res['prizes'][3]/1e4:,.0f}만)이고, 세후는 복권 세금(22%/33%)을 뺀 값입니다. "
+                    f"이론 기대 회수율: 세전 {res['theory_return']*100:.1f}% · 세후 {res['theory_return_net']*100:.1f}%. "
+                    "실제 표본 회수율은 3등 한두 번에도 크게 흔들립니다."
                 )
 
     with tab_b:
@@ -674,14 +736,15 @@ def page_strategy_lab():
         gpw = c1.slider("매주 게임 수", 1, 20, 5, key="life_g")
         years = c2.slider("기간(년)", 1, 50, 30, key="life_y")
         paths = c3.select_slider("시뮬레이션 인생 수", options=[10_000, 100_000, 500_000], value=100_000)
-        lt = strategy_lab.lifetime_simulation(gpw, years, paths, seed=None)
+        net = st.toggle("세금 뺀 실수령 기준", value=True, key="life_net")
+        lt = strategy_lab.lifetime_simulation(gpw, years, paths, seed=None, net=net)
         m1, m2, m3, m4 = st.columns(4)
         m1.metric("총 구매액", f"{lt['spent']:,.0f}원")
         m2.metric("중간값 손익", f"{lt['median_net']:,.0f}원")
         m3.metric("본전 이상일 확률", f"{lt['p_net_positive']*100:.2f}%")
         m4.metric("1등 한 번이라도 (정확 계산)", f"{lt['p_tier'][1]*100:.3f}%")
         st.write(
-            f"기대 회수율 {lt['expected_return_rate']*100:.1f}% (이론값, 1등 상금 포함) · 중간값 회수율 "
+            f"기대 회수율 {lt['expected_return_rate']*100:.1f}% ({'세후' if net else '세전'} 이론값, 1등 상금 포함) · 중간값 회수율 "
             f"{lt['median_return_rate']*100:.1f}% (대부분 사람이 실제로 겪는 값) · 3등 이상 한 번이라도 "
             f"{lt['p_tier'][3]*100:.1f}% (정확 계산)"
         )

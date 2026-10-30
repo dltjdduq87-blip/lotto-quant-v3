@@ -29,7 +29,7 @@ def optimize_portfolio(
     weights: np.ndarray | None = None,
     size: int = PORTFOLIO_SIZE,
     target_sum_mean: float = 138.0,  # theoretical mean of 6 draws from 1..45
-    target_sum_std: float = 30.0,
+    target_sum_std: float = 29.95,  # exact: sqrt(6 * (45^2-1)/12 * 39/44)
     candidate_pool: int = 500,
     seed: int | None = None,
 ) -> list[Ticket]:
@@ -60,7 +60,7 @@ def optimize_portfolio(
         remaining.remove(pick)
 
     while len(chosen) < size:  # candidate pool exhausted (shouldn't happen normally)
-        t = _sample_ticket(rng, weights)
+        t = sample_ticket(rng, weights)
         if t not in chosen:
             chosen.append(t)
 

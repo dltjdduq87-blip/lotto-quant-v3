@@ -19,17 +19,38 @@ from lotto_quant_v3.statistics.analysis import number_frequency, sum_distributio
 ALPHA = 0.05
 
 
+POOL = NUM_MAX - NUM_MIN + 1
+# The 6 numbers of one draw are taken WITHOUT replacement, so a number's count has variance
+# N*p*(1-p) with p=6/45 instead of the multinomial 6N*(1/45)*(44/45). Pearson's statistic is
+# therefore (39/44)*chi2(44) under H0; multiplying by 44/39 restores the textbook chi2(44).
+WITHOUT_REPLACEMENT_FACTOR = (POOL - 1) / (POOL - PICK_SIZE)
+
+
+def holm_adjust(p_values: dict) -> dict:
+    """Holm-Bonferroni adjusted p-values (controls the chance of ANY false alarm across tests)."""
+    items = sorted(p_values.items(), key=lambda kv: kv[1])
+    m, out, running = len(items), {}, 0.0
+    for i, (k, p) in enumerate(items):
+        running = max(running, min(1.0, (m - i) * p))
+        out[k] = running
+    return out
+
+
 def chi_square_uniformity(df) -> dict:
     """H0: every number 1-45 is equally likely to be drawn.
     Expected count per number over N draws of 6 numbers each = N*6/45."""
     freq = number_frequency(df)
     n_draws = len(df)
-    expected = n_draws * PICK_SIZE / (NUM_MAX - NUM_MIN + 1)
-    chi2, p = stats.chisquare(freq.values, f_exp=[expected] * len(freq))
+    expected = n_draws * PICK_SIZE / POOL
+    raw = float(((freq.values - expected) ** 2 / expected).sum())
+    chi2 = raw * WITHOUT_REPLACEMENT_FACTOR
+    dof = len(freq) - 1
+    p = float(stats.chi2.sf(chi2, dof))
     return {
-        "test": "Chi-square goodness-of-fit (uniformity)",
+        "test": "Chi-square goodness-of-fit (uniformity, without-replacement corrected)",
         "statistic": float(chi2),
-        "dof": len(freq) - 1,
+        "statistic_uncorrected": raw,
+        "dof": dof,
         "p_value": float(p),
         "reject_null_at_0.05": bool(p < ALPHA),
         "interpretation": (
@@ -132,17 +153,28 @@ def entropy_analysis(df) -> dict:
     }
 
 
+def bonus_uniformity(df) -> dict:
+    """H0: the bonus ball is uniform over 1-45 (one number per draw -> plain multinomial chi-square)."""
+    counts = np.bincount(df["bonus"].astype(int).to_numpy() - NUM_MIN, minlength=POOL)
+    chi2, p = stats.chisquare(counts)
+    return {"test": "Chi-square uniformity of the bonus ball", "statistic": float(chi2),
+            "dof": POOL - 1, "p_value": float(p), "reject_null_at_0.05": bool(p < ALPHA)}
+
+
 def summarize_randomness(df) -> dict:
     chi2 = chi_square_uniformity(df)
     runs = runs_test(df)
     autocorr = autocorrelation_test(df)
     entropy = entropy_analysis(df)
+    bonus = bonus_uniformity(df) if "bonus" in df else None
 
-    tests_rejecting_null = sum([
-        chi2["reject_null_at_0.05"],
-        runs["reject_null_at_0.05"],
-        any(v["reject_null_at_0.05"] for v in autocorr["lags"].values()),
-    ])
+    raw_p = {"chi_square": chi2["p_value"], "runs": runs["p_value"]}
+    if bonus:
+        raw_p["bonus"] = bonus["p_value"]
+    raw_p.update({f"autocorr_{k}": v["p_value"] for k, v in autocorr["lags"].items()})
+    adj = holm_adjust(raw_p)
+    rejected = [k for k, v in adj.items() if v < ALPHA]
+    tests_rejecting_null = len(rejected)
 
     return {
         "n_draws_tested": len(df),
@@ -150,13 +182,17 @@ def summarize_randomness(df) -> dict:
         "runs_test": runs,
         "autocorrelation": autocorr,
         "entropy": entropy,
-        "tests_rejecting_null_of_3": tests_rejecting_null,
+        "bonus_uniformity": bonus,
+        "p_values_raw": raw_p,
+        "p_values_holm": adj,
+        "n_tests": len(raw_p),
+        "tests_rejecting_null_of_3": tests_rejecting_null,  # kept for backward compatibility
+        "tests_rejecting_null_holm": tests_rejecting_null,
         "overall_conclusion": (
-            "모든 정밀 검정을 통과 -- i.i.d. 균등분포 가설과 완전히 일치. "
+            f"검정 {len(raw_p)}개 모두 통과 (Holm 다중검정 보정 후) -- i.i.d. 균등분포 가설과 일치. "
             "예측 가능한 구조가 존재한다는 증거 없음."
             if tests_rejecting_null == 0 else
-            f"{tests_rejecting_null}개 검정에서 귀무가설 기각 (p<0.05) -- "
-            "다중검정 시 5%는 우연히 기각될 수 있으므로 (multiple testing), "
-            "단일 결과만으로 비무작위성을 결론짓지 말 것. Bonferroni 등 보정 후 재검토 권장."
+            f"Holm 보정 후에도 {tests_rejecting_null}개 검정({', '.join(rejected)})에서 귀무가설 기각 (p<0.05) -- "
+            "추가 데이터로 재현되는지 확인 필요."
         ),
     }

@@ -6,37 +6,45 @@ from lotto_quant_v3.portfolio.generator import Ticket
 
 
 def simulate_portfolio(tickets: list[Ticket], n_draws: int = 100_000, seed: int | None = None) -> dict:
-    """Draw `n_draws` random 6-number combinations and, for each, record the
-    best (max) match count achieved by any ticket in the portfolio."""
+    """Draw `n_draws` random rounds (6 main numbers + bonus) and record, for each, the best match
+    count and the best prize tier achieved by any ticket in the portfolio."""
     rng = np.random.default_rng(seed)
-    pool = np.arange(NUM_MIN, NUM_MAX + 1)
-    tickets_arr = np.array(tickets, dtype=np.int16)  # (n_tickets, 6)
+    pool_size = NUM_MAX - NUM_MIN + 1
+    tmask = np.zeros((len(tickets), pool_size), dtype=bool)
+    for i, t in enumerate(tickets):
+        tmask[i, np.asarray(t) - NUM_MIN] = True
 
     best_match = np.zeros(n_draws, dtype=np.int8)
+    best_tier = np.zeros(n_draws, dtype=np.int8)  # 0 = nothing, else 1..5 (lower is better)
     batch = min(n_draws, 200_000)
     done = 0
     while done < n_draws:
-        this_batch = min(batch, n_draws - done)
-        # Vectorized sampling-without-replacement: rank random keys per row,
-        # take the lowest PICK_SIZE indices. Far faster than per-row rng.choice.
-        rand_keys = rng.random((this_batch, pool.size))
-        idx = np.argpartition(rand_keys, PICK_SIZE, axis=1)[:, :PICK_SIZE]
-        draws = pool[idx]  # (this_batch, 6)
-
-        batch_best = np.zeros(this_batch, dtype=np.int8)
-        for t in tickets_arr:
-            match_count = np.isin(draws, t).sum(axis=1)
-            batch_best = np.maximum(batch_best, match_count)
-        best_match[done:done + this_batch] = batch_best
-        done += this_batch
+        nb = min(batch, n_draws - done)
+        # sampling without replacement: the 7 smallest random keys -> 6 main + 1 bonus
+        idx = np.argsort(rng.random((nb, pool_size)), axis=1)[:, :PICK_SIZE + 1]
+        main = np.zeros((nb, pool_size), dtype=bool)
+        main[np.repeat(np.arange(nb), PICK_SIZE), idx[:, :PICK_SIZE].ravel()] = True
+        bonus = idx[:, PICK_SIZE]
+        m = main.astype(np.int8) @ tmask.T.astype(np.int8)          # (nb, T) match counts
+        has_bonus = tmask[:, bonus].T                                  # (nb, T)
+        tier = np.select([m == 6, (m == 5) & has_bonus, m == 5, m == 4, m == 3],
+                         [1, 2, 3, 4, 5], default=9)
+        bt = tier.min(axis=1)
+        best_tier[done:done + nb] = np.where(bt == 9, 0, bt)
+        best_match[done:done + nb] = m.max(axis=1)
+        done += nb
 
     counts = {k: int((best_match == k).sum()) for k in range(0, PICK_SIZE + 1)}
     at_least = {k: int((best_match >= k).sum()) for k in range(0, PICK_SIZE + 1)}
+    tier_counts = {k: int((best_tier == k).sum()) for k in range(6)}
     return {
         "n_draws": n_draws,
         "counts": counts,
         "probability_exactly": {k: v / n_draws for k, v in counts.items()},
         "probability_at_least": {k: v / n_draws for k, v in at_least.items()},
+        "best_tier_counts": tier_counts,
+        "best_tier_probability": {k: v / n_draws for k, v in tier_counts.items()},
+        "any_prize_probability": float((best_tier > 0).mean()),
         "max_hit_ever": int(best_match.max()),
     }
 
@@ -136,5 +144,7 @@ def compare_to_exact(mc_result: dict, exact_result: dict) -> dict:
             "monte_carlo": mc_p,
             "exact": exact_p,
             "abs_diff": abs(mc_p - exact_p),
+            # binomial standard error of the Monte Carlo estimate: |diff| within ~3 SE is expected
+            "z": (mc_p - exact_p) / max(np.sqrt(exact_p * (1 - exact_p) / mc_result["n_draws"]), 1e-12),
         }
     return diffs

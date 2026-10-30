@@ -223,5 +223,62 @@ class TestStrategyLab(unittest.TestCase):
         self.assertEqual(len(res["rows"]), len(strategy_lab.STRATEGIES))
 
 
+class TestCalculationUpgrade(unittest.TestCase):
+    def test_prize_model_matches_pari_mutuel_rule(self):
+        from lotto_quant_v3.probability import prize_model
+        m = prize_model.PrizeModel()
+        self.assertAlmostEqual(m.expected_return(), 0.5, places=4)  # 50% of sales is paid out
+        # 1st tier expected share for ~119 billion won sales: ~19.5억 (known published figure)
+        self.assertAlmostEqual(m.prize_per_ticket(1) / 1e8, 19.52, delta=0.05)
+        self.assertLess(m.expected_return(net=True), m.expected_return())
+
+    def test_after_tax_brackets(self):
+        from lotto_quant_v3.probability.prize_model import after_tax
+        self.assertEqual(after_tax(2_000_000), 2_000_000)
+        self.assertAlmostEqual(after_tax(60_000_000), 60_000_000 - 0.22 * (60_000_000 - 1000))
+        self.assertAlmostEqual(after_tax(1_000_000_000),
+                               1_000_000_000 - (0.22 * 300_000_000 + 0.33 * (1_000_000_000 - 1000 - 300_000_000)))
+
+    def test_exact_single_ticket_tiers_equal_official_odds(self):
+        r = probability.exact_portfolio_distribution([(1, 2, 3, 4, 5, 6)])
+        p = strategy_lab.tier_probabilities()
+        for k in range(6):
+            self.assertAlmostEqual(r["best_tier_probability"][k], p[k], places=12)
+
+    def test_exact_tiers_agree_with_monte_carlo(self):
+        tickets = [(1, 2, 3, 4, 5, 6), (1, 2, 3, 4, 5, 7), (8, 9, 10, 11, 12, 13)]
+        ex = probability.exact_portfolio_distribution(tickets)
+        mc = monte_carlo.simulate_portfolio(tickets, n_draws=400_000, seed=3)
+        for k in (0, 4, 5):
+            e, m = ex["best_tier_probability"][k], mc["best_tier_probability"][k]
+            se = np.sqrt(e * (1 - e) / 400_000)
+            self.assertLess(abs(m - e), 4 * se)
+        self.assertGreater(ex["overlap_loss"], 0)
+
+    def test_chi_square_correction_and_holm(self):
+        self.assertAlmostEqual(randomness_tests.WITHOUT_REPLACEMENT_FACTOR, 44 / 39)
+        adj = randomness_tests.holm_adjust({"a": 0.01, "b": 0.04, "c": 0.5})
+        self.assertAlmostEqual(adj["a"], 0.03)
+        self.assertAlmostEqual(adj["b"], 0.08)
+        self.assertAlmostEqual(adj["c"], 0.5)
+
+    def test_history_features_match_slow_versions(self):
+        from lotto_quant_v3.statistics import analysis
+        df = _synthetic_uniform_df(n=300, seed=9)
+        df["round"] = np.arange(1, len(df) + 1)
+        h = strategy_lab.History(df)
+        for idx in (50, 299):
+            hist = df.iloc[:idx]
+            np.testing.assert_array_equal(h.freq(idx), analysis.number_frequency(hist).values)
+            np.testing.assert_array_equal(h.freq(idx, 100), analysis.number_frequency(hist.tail(100)).values)
+            slow = analysis.gap_since_last_seen(hist.tail(200)).fillna(200).values.astype(float)
+            np.testing.assert_array_equal(h.gaps(idx), slow)
+
+    def test_optimizer_fallback_path(self):
+        from lotto_quant_v3.optimization import optimizer
+        port = optimizer.optimize_portfolio(size=5, candidate_pool=2, seed=1)
+        self.assertEqual(len(port), 5)
+
+
 if __name__ == "__main__":
     unittest.main()
