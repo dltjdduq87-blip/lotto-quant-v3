@@ -13,7 +13,7 @@ from lotto_quant_v3.data import news_search
 from lotto_quant_v3.data.excel_import import round_to_date
 from lotto_quant_v3.portfolio import generator, probability
 from lotto_quant_v3.probability import engine
-from lotto_quant_v3.simulation import monte_carlo
+from lotto_quant_v3.simulation import monte_carlo, strategy_lab
 from lotto_quant_v3.statistics import randomness_tests
 
 
@@ -183,6 +183,40 @@ class TestMonteCarloCompareCandidates(unittest.TestCase):
         self.assertEqual(ranks, list(range(1, 11)))
         tickets_seen = {r["ticket"] for r in result["ranked"]}
         self.assertEqual(tickets_seen, set(candidates))
+
+
+class TestStrategyLab(unittest.TestCase):
+    def test_prize_tier_rules(self):
+        main, bonus = (1, 2, 3, 4, 5, 6), 7
+        self.assertEqual(strategy_lab.prize_tier((1, 2, 3, 4, 5, 6), main, bonus), 1)
+        self.assertEqual(strategy_lab.prize_tier((1, 2, 3, 4, 5, 7), main, bonus), 2)
+        self.assertEqual(strategy_lab.prize_tier((1, 2, 3, 4, 5, 8), main, bonus), 3)
+        self.assertEqual(strategy_lab.prize_tier((1, 2, 3, 4, 7, 8), main, bonus), 4)
+        self.assertEqual(strategy_lab.prize_tier((1, 2, 3, 7, 8, 9), main, bonus), 5)
+        self.assertEqual(strategy_lab.prize_tier((1, 2, 7, 8, 9, 10), main, bonus), 0)
+
+    def test_tier_probabilities_sum_to_one(self):
+        p = strategy_lab.tier_probabilities()
+        self.assertAlmostEqual(p.sum(), 1.0, places=12)
+        self.assertAlmostEqual(p[5], 1 / 45, delta=0.0005)
+
+    def test_lifetime_mean_matches_expected_value(self):
+        lt = strategy_lab.lifetime_simulation(5, 10, n_paths=200_000, seed=3,
+                                              prizes={1: 0, 2: 0, 3: 0, 4: 50_000, 5: 5_000})
+        ev = strategy_lab.expected_return({1: 0, 2: 0, 3: 0, 4: 50_000, 5: 5_000})
+        self.assertAlmostEqual(lt["mean_return_rate"], ev, delta=0.005)
+
+    def test_walkforward_runs_without_leakage(self):
+        rng = np.random.default_rng(5)
+        draws = []
+        for r in range(1, 81):
+            nums = sorted(rng.choice(np.arange(1, 46), 7, replace=False).tolist())
+            main, bonus = nums[:6], nums[6]
+            draws.append({"round": r, "draw_date": "2020-01-01", "n1": main[0], "n2": main[1], "n3": main[2],
+                          "n4": main[3], "n5": main[4], "n6": main[5], "bonus": bonus})
+        res = strategy_lab.strategy_walkforward(draws, n_repeats=1, games=3, min_history=60)
+        self.assertEqual(res["n_rounds"], 20)
+        self.assertEqual(len(res["rows"]), len(strategy_lab.STRATEGIES))
 
 
 if __name__ == "__main__":

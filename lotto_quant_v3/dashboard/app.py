@@ -24,7 +24,7 @@ from lotto_quant_v3.data import db, news_search
 from lotto_quant_v3.optimization import optimizer
 from lotto_quant_v3.portfolio import generator, probability
 from lotto_quant_v3.probability import engine as prob_engine
-from lotto_quant_v3.simulation import monte_carlo
+from lotto_quant_v3.simulation import monte_carlo, strategy_lab
 from lotto_quant_v3.statistics import analysis, randomness_tests, significance
 
 st.set_page_config(page_title="LOTTO 6/45 QUANT V3", page_icon="🎱", layout="wide")
@@ -609,6 +609,86 @@ def page_play():
         components.html(render_draw_machine(my_ticket, drawn_main, bonus), height=640, scrolling=False)
 
 
+
+def page_strategy_lab():
+    st.title("🧪 시뮬레이션 랩")
+    st.caption(
+        "번호 고르는 방법을 실제 과거 추첨에 그대로 대입해 봅니다. 매 회차마다 그 회차 **이전** 데이터만 써서 "
+        "번호를 만들고(미래 정보 사용 없음), 무작위 시드를 여러 번 바꿔 반복해서 운에 좌우되지 않게 했습니다. "
+        "당첨 판정은 보너스 번호까지 포함한 실제 등수 기준입니다."
+    )
+    tab_a, tab_b = st.tabs(["📜 번호 선택 방법 비교 (과거 대입)", "💸 평생 구매 시뮬레이션"])
+
+    with tab_a:
+        draws = db.get_all_draws()
+        if len(draws) < 80:
+            st.warning("과거 데이터가 부족합니다.")
+        else:
+            c1, c2, c3 = st.columns(3)
+            n_rep = c1.select_slider("반복 횟수(시드)", options=[1, 3, 5, 10, 20], value=5)
+            games = c2.slider("회차당 게임 수", 1, 10, 5)
+            last_n = c3.select_slider("검증할 최근 회차 수", options=[200, 500, 800, "전체"], value=500)
+            if st.button("▶ 비교 실행", key="lab_run"):
+                bar = st.progress(0.0, text="과거 회차에 하나씩 대입하는 중...")
+                res = strategy_lab.strategy_walkforward(
+                    draws, n_repeats=n_rep, games=games,
+                    last_n_rounds=None if last_n == "전체" else int(last_n),
+                    progress=lambda f: bar.progress(min(f, 1.0), text=f"대입 중... {f*100:.0f}%"),
+                )
+                bar.empty()
+                st.session_state["lab_res"] = res
+            res = st.session_state.get("lab_res")
+            if res:
+                st.write(f"검증 회차 {res['round_range'][0]}~{res['round_range'][1]} ({res['n_rounds']}회) × "
+                         f"{res['games']}게임 × 시드 {res['n_repeats']}번")
+                table = pd.DataFrame([{
+                    "전략": r["전략"],
+                    "5등 이상 당첨률(게임당)": f"{r['5등 이상 당첨률(게임당)']*100:.2f}%",
+                    "이론값과 차이(z)": round(r["5등 이상 당첨률 z(이론 대비)"], 2),
+                    "회수율": f"{r['회수율']*100:.1f}%",
+                    "평균 최고 일치": round(r["평균 최고 일치 개수"], 3),
+                    "게임 간 겹친 번호": round(r["게임 간 겹친 번호 수"], 2),
+                    "4등": r["등수별 횟수"][4], "3등": r["등수별 횟수"][3], "2등": r["등수별 횟수"][2], "1등": r["등수별 횟수"][1],
+                } for r in res["rows"]])
+                st.dataframe(table, width="stretch", hide_index=True)
+                fig = go.Figure(go.Bar(
+                    x=[r["전략"] for r in res["rows"]],
+                    y=[r["5등 이상 당첨률(게임당)"] * 100 for r in res["rows"]],
+                    marker_color=VIZ["accent"],
+                ))
+                fig.add_hline(y=res["theory_5th_or_better"] * 100, line_dash="dash", line_color=VIZ["critical"],
+                              annotation_text=f"이론값 {res['theory_5th_or_better']*100:.2f}%",
+                              annotation_font_color=VIZ["critical"])
+                styled_layout(fig, "전략별 5등 이상 당첨률 (게임당)", "", "%")
+                st.plotly_chart(fig, width="stretch")
+                st.info(
+                    "읽는 법: '이론값과 차이(z)'가 ±2 안이면 무작위와 구분이 안 되는 수준입니다. "
+                    "'평균 최고 일치'는 한 회차 5게임 중 가장 많이 맞은 개수의 평균이라, 게임끼리 번호가 덜 겹칠수록 "
+                    "자연히 올라갑니다(예측력이 아니라 번호를 넓게 펼친 효과). 1~3등 상금은 회차마다 달라 "
+                    "대표값(1등 20억, 2등 6천만, 3등 150만)으로 계산했습니다."
+                )
+
+    with tab_b:
+        c1, c2, c3 = st.columns(3)
+        gpw = c1.slider("매주 게임 수", 1, 20, 5, key="life_g")
+        years = c2.slider("기간(년)", 1, 50, 30, key="life_y")
+        paths = c3.select_slider("시뮬레이션 인생 수", options=[10_000, 100_000, 500_000], value=100_000)
+        lt = strategy_lab.lifetime_simulation(gpw, years, paths, seed=None)
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("총 구매액", f"{lt['spent']:,.0f}원")
+        m2.metric("중간값 손익", f"{lt['median_net']:,.0f}원")
+        m3.metric("본전 이상일 확률", f"{lt['p_net_positive']*100:.2f}%")
+        m4.metric("1등 한 번이라도", f"{lt['p_tier'][1]*100:.3f}%")
+        st.write(
+            f"평균 회수율 {lt['mean_return_rate']*100:.1f}% (1등 상금 포함 기대값) · 중간값 회수율 "
+            f"{lt['median_return_rate']*100:.1f}% (대부분 사람이 실제로 겪는 값) · 3등 이상 한 번이라도 "
+            f"{lt['p_tier'][3]*100:.1f}%"
+        )
+        fig = go.Figure(go.Histogram(x=lt["net_samples"] / 10_000, nbinsx=80, marker_color=VIZ["accent"]))
+        styled_layout(fig, "평생 손익 분포 (만원, 1등 당첨 같은 극단값은 오른쪽 끝)", "손익(만원)", "인생 수")
+        st.plotly_chart(fig, width="stretch")
+
+
 PAGES = {
     "🎰 추첨 플레이": page_play,
     "💼 번호 생성": page_portfolio,
@@ -619,6 +699,7 @@ PAGES = {
     "Monte Carlo": page_simulation,
     "⚖️ 조합 비교": page_noise_check,
     "백테스트": page_backtest,
+    "🧪 시뮬레이션 랩": page_strategy_lab,
 }
 
 
