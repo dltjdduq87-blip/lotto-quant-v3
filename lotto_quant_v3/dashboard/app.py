@@ -424,7 +424,7 @@ def page_randomness():
         with st.spinner("카이제곱 · 런 검정 · 자기상관 · 엔트로피 분석 중..."):
             result = randomness_tests.summarize_randomness(df)
 
-        n_reject = result["tests_rejecting_null_of_3"]
+        n_reject = result["tests_rejecting_null_holm"]
         if n_reject == 0:
             st.success(result["overall_conclusion"])
         else:
@@ -507,9 +507,10 @@ def page_portfolio():
             c1, c2, c3 = st.columns(3)
             c1.metric("5등 이상 하나라도", f"{result['any_prize_probability']*100:.3f}%")
             c2.metric("1등 확률", f"1 / {1/result['jackpot_probability']:,.0f}")
-            c3.metric("번호 겹침으로 잃는 당첨 확률", f"{result['overlap_loss']*100:.3f}%p",
-                      help="게임끼리 번호가 겹치면 같은 추첨에 같이 당첨되거나 같이 떨어져서, "
-                           "'하나라도 당첨될 확률'이 단순 합계보다 줄어듭니다. 기대 당첨금 자체는 변하지 않습니다.")
+            c3.metric("단순 합계 대비 줄어든 몫", f"{result['overlap_loss']*100:.3f}%p",
+                      help="게임별 당첨 확률을 그냥 더한 값과 '하나라도 당첨될 확률'의 차이입니다. 한 회차에 두 게임 이상이 "
+                           "같이 당첨되는 경우가 있어 생기며, 게임끼리 번호가 많이 겹칠수록 커집니다(겹침 0이어도 0은 아님). "
+                           "기대 당첨금 자체는 변하지 않습니다.")
             st.dataframe(tier_table(result["best_tier_probability"]), width="stretch", hide_index=True)
             st.caption("보너스 번호까지 포함해 C(45,6)=8,145,060개 추첨 결과를 전부 계산한 정확값입니다 (표본 아님).")
 
