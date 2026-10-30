@@ -97,6 +97,7 @@ def strategy_walkforward(draws: list[dict], n_repeats: int = 10, games: int = 5,
     # per strategy, per round: average over repeats of money won and best match
     won = {s: np.zeros(len(idxs)) for s in names}
     best = {s: np.zeros(len(idxs)) for s in names}
+    win_rate = {s: np.zeros(len(idxs)) for s in names}  # per round: share of games with any prize
     tiers = {s: np.zeros(6, dtype=np.int64) for s in names}
     overlap = {s: 0.0 for s in names}
     total_steps = len(idxs) * n_repeats
@@ -114,6 +115,7 @@ def strategy_walkforward(draws: list[dict], n_repeats: int = 10, games: int = 5,
                 for t in port:
                     tier = prize_tier(t, main, bonus)
                     tiers[s][tier] += 1
+                    win_rate[s][k] += (tier > 0) / (games * n_repeats)
                     w += prizes.get(tier, 0)
                     bm = max(bm, len(set(t) & set(main)))
                 won[s][k] += w / n_repeats
@@ -135,7 +137,11 @@ def strategy_walkforward(draws: list[dict], n_repeats: int = 10, games: int = 5,
             ci = (float(np.percentile(bs, 2.5)), float(np.percentile(bs, 97.5)))
         p_win = tiers[s][1:].sum() / n_tickets
         p_th = float(sum(t.probability for t in engine.build_prize_table()))
-        z_win = (p_win - p_th) / np.sqrt(p_th * (1 - p_th) / n_tickets)
+        # Games in the same round share one draw (and seeds reuse the same draws), so they are not
+        # independent: use the round as the unit and take the standard error across rounds.
+        wr = win_rate[s]
+        se = wr.std(ddof=1) / np.sqrt(len(wr)) if len(wr) > 1 else np.nan
+        z_win = (wr.mean() - p_th) / se if se and se > 0 else 0.0
         rows.append({
             "전략": s,
             "게임 간 겹친 번호 수": float(overlap[s]),
@@ -182,11 +188,15 @@ def lifetime_simulation(games_per_week: int = 5, years: int = 30, n_paths: int =
     spent = n_games * TICKET_PRICE
     net = won - spent
     pct = lambda q: float(np.percentile(net, q))
+    p = tier_probabilities()
     return {
         "games": n_games, "spent": spent,
         "p_net_positive": float((net > 0).mean()),
-        "p_tier": {k: float((counts[:, k] > 0).mean()) for k in range(1, 6)},
+        # "tier k or better at least once" -- exact, no sampling noise
+        "p_tier": {k: float(1 - (1 - p[1:k + 1].sum()) ** n_games) for k in range(1, 6)},
+        "expected_return_rate": expected_return(prizes),
         "mean_won": float(won.mean()), "median_net": pct(50), "p10_net": pct(10), "p90_net": pct(90),
-        "median_return_rate": float(np.median(won) / spent), "mean_return_rate": float(won.mean() / spent),
+        "median_return_rate": float(np.median(won) / spent),
+        "sample_mean_return_rate": float(won.mean() / spent), "mean_return_rate": float(won.mean() / spent),
         "net_samples": net[:20000],
     }

@@ -663,6 +663,7 @@ def page_strategy_lab():
                 st.plotly_chart(fig, width="stretch")
                 st.info(
                     "읽는 법: '이론값과 차이(z)'가 ±2 안이면 무작위와 구분이 안 되는 수준입니다. "
+                    "z는 같은 회차 게임끼리 독립이 아니라는 점을 반영해 회차 단위로 계산했습니다. "
                     "'평균 최고 일치'는 한 회차 5게임 중 가장 많이 맞은 개수의 평균이라, 게임끼리 번호가 덜 겹칠수록 "
                     "자연히 올라갑니다(예측력이 아니라 번호를 넓게 펼친 효과). 1~3등 상금은 회차마다 달라 "
                     "대표값(1등 20억, 2등 6천만, 3등 150만)으로 계산했습니다."
@@ -678,12 +679,14 @@ def page_strategy_lab():
         m1.metric("총 구매액", f"{lt['spent']:,.0f}원")
         m2.metric("중간값 손익", f"{lt['median_net']:,.0f}원")
         m3.metric("본전 이상일 확률", f"{lt['p_net_positive']*100:.2f}%")
-        m4.metric("1등 한 번이라도", f"{lt['p_tier'][1]*100:.3f}%")
+        m4.metric("1등 한 번이라도 (정확 계산)", f"{lt['p_tier'][1]*100:.3f}%")
         st.write(
-            f"평균 회수율 {lt['mean_return_rate']*100:.1f}% (1등 상금 포함 기대값) · 중간값 회수율 "
+            f"기대 회수율 {lt['expected_return_rate']*100:.1f}% (이론값, 1등 상금 포함) · 중간값 회수율 "
             f"{lt['median_return_rate']*100:.1f}% (대부분 사람이 실제로 겪는 값) · 3등 이상 한 번이라도 "
-            f"{lt['p_tier'][3]*100:.1f}%"
+            f"{lt['p_tier'][3]*100:.1f}% (정확 계산)"
         )
+        st.caption(f"이번 시뮬레이션 표본 평균 회수율 {lt['sample_mean_return_rate']*100:.1f}% — 1등 같은 드문 "
+                   "고액 당첨 때문에 실행할 때마다 크게 흔들려서, 위 기대 회수율은 정확한 계산값을 씁니다.")
         fig = go.Figure(go.Histogram(x=lt["net_samples"] / 10_000, nbinsx=80, marker_color=VIZ["accent"]))
         styled_layout(fig, "평생 손익 분포 (만원, 1등 당첨 같은 극단값은 오른쪽 끝)", "손익(만원)", "인생 수")
         st.plotly_chart(fig, width="stretch")

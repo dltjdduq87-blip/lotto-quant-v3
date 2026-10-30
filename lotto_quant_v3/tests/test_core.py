@@ -205,6 +205,10 @@ class TestStrategyLab(unittest.TestCase):
                                               prizes={1: 0, 2: 0, 3: 0, 4: 50_000, 5: 5_000})
         ev = strategy_lab.expected_return({1: 0, 2: 0, 3: 0, 4: 50_000, 5: 5_000})
         self.assertAlmostEqual(lt["mean_return_rate"], ev, delta=0.005)
+        self.assertAlmostEqual(lt["expected_return_rate"], ev, places=12)
+        # "tier 5 or better at least once" must include higher tiers and be monotone
+        self.assertGreaterEqual(lt["p_tier"][5], lt["p_tier"][4])
+        self.assertGreaterEqual(lt["p_tier"][3], lt["p_tier"][1])
 
     def test_walkforward_runs_without_leakage(self):
         rng = np.random.default_rng(5)
