@@ -9,8 +9,9 @@ from datetime import date
 import numpy as np
 import pandas as pd
 
-from lotto_quant_v3.data import news_search
+from lotto_quant_v3.data import news_search, results_feed
 from lotto_quant_v3.data.excel_import import round_to_date
+from lotto_quant_v3.popularity import model as popularity
 from lotto_quant_v3.portfolio import generator, probability
 from lotto_quant_v3.probability import engine
 from lotto_quant_v3.simulation import monte_carlo, strategy_lab
@@ -279,6 +280,191 @@ class TestCalculationUpgrade(unittest.TestCase):
         port = optimizer.optimize_portfolio(size=5, candidate_pool=2, seed=1)
         self.assertEqual(len(port), 5)
 
+
+
+def _synthetic_stats(n_rounds=600, seed=0, manual_share=0.4, strength=4.0):
+    """Rounds where manual players really do prefer low numbers; auto players are uniform."""
+    rng = np.random.default_rng(seed)
+    true_beta = np.linspace(0.04, -0.04, 45)            # number 1 most popular, 45 least
+    tickets = 100_000_000
+    rows = []
+    for i in range(n_rounds):
+        nums = np.sort(rng.choice(45, 6, replace=False))
+        score = true_beta[nums].sum()
+        p = popularity.P_TIER
+        w4 = tickets * p[4] * np.exp(score)
+        rows.append({
+            "round": popularity.MIN_ROUND + i, "sales": tickets * 1000,
+            **{f"n{k + 1}": int(nums[k]) + 1 for k in range(6)}, "bonus": 1,
+            "w1": 0, "w2": 0, "w3": int(rng.poisson(tickets * p[3] * np.exp(score))), "w4": int(w4), "w5": 0,
+            "p1": 2_000_000_000, "p2": 0, "p3": 0, "p4": 50_000, "p5": 5_000,
+            "auto": int(rng.poisson(tickets * p[1] * (1 - manual_share))),
+            "manual": int(rng.poisson(tickets * p[1] * manual_share * np.exp(strength * score))),
+            "semi_auto": None,
+        })
+        rows[-1]["w1"] = rows[-1]["auto"] + rows[-1]["manual"]
+    return rows, true_beta
+
+
+class TestResultsFeed(unittest.TestCase):
+    RECORD = {
+        "draw_no": 1249, "numbers": [35, 2, 11, 16, 25, 34], "bonus_no": 14, "date": "2026-11-07T00:00:00Z",
+        "divisions": [{"prize": 2025045509, "winners": 14}, {"prize": 50807594, "winners": 93},
+                      {"prize": 1331016, "winners": 3550}, {"prize": 50000, "winners": 162101},
+                      {"prize": 5000, "winners": 2634961}],
+        "total_sales_amount": 118161409000, "winners_combination": {"auto": 7, "manual": 7},
+    }
+
+    def test_parse_valid_record(self):
+        r = results_feed.parse_record(self.RECORD)
+        self.assertEqual(r.numbers, (2, 11, 16, 25, 34, 35))
+        self.assertEqual((r.bonus, r.draw_date, r.sales), (14, "2026-11-07", 118161409000))
+        self.assertEqual(r.winners, (14, 93, 3550, 162101, 2634961))
+        self.assertEqual((r.auto, r.semi_auto, r.manual), (7, None, 7))
+
+    def test_missing_first_prize_is_none_not_error(self):
+        rec = dict(self.RECORD, divisions=[{}] + self.RECORD["divisions"][1:], winners_combination={})
+        r = results_feed.parse_record(rec)
+        self.assertIsNone(r.winners[0])
+        self.assertIsNone(r.auto)
+
+    def test_rejects_bad_records(self):
+        for bad in (
+            dict(self.RECORD, numbers=[2, 2, 11, 16, 25, 34]),          # duplicate
+            dict(self.RECORD, numbers=[2, 11, 16, 25, 34, 46]),         # out of range
+            dict(self.RECORD, bonus_no=35),                             # bonus repeats a main number
+            dict(self.RECORD, date="2026-11-08T00:00:00Z"),             # not the scheduled Saturday
+        ):
+            with self.assertRaises(ValueError):
+                results_feed.parse_record(bad)
+        good, problems = results_feed.parse_feed([self.RECORD, dict(self.RECORD, bonus_no=35)])
+        self.assertEqual((len(good), len(problems)), (1, 1))
+
+    def test_sync_inserts_new_and_never_overwrites_conflicts(self):
+        class FakeDB:
+            def __init__(self):
+                self.draws = {1248: {"round": 1248, "n1": 1, "n2": 2, "n3": 3, "n4": 4, "n5": 5, "n6": 6, "bonus": 7}}
+                self.stats = []
+            def init_db(self): pass
+            def get_all_draws(self): return list(self.draws.values())
+            def upsert_draw(self, round_no, draw_date, numbers, bonus, source, verified):
+                self.draws[round_no] = {"round": round_no}
+            def upsert_stats(self, rows): self.stats = [r.round for r in rows]
+
+        fake = FakeDB()
+        other = dict(self.RECORD, draw_no=1248, date="2026-10-31T00:00:00Z")   # disagrees with stored 1..6
+        report = results_feed.sync(fake, [self.RECORD, other])
+        self.assertEqual(report["new_rounds"], [1249])
+        self.assertEqual(report["conflicts"], [1248])
+        self.assertEqual(fake.stats, [1249])                    # no stats written for the conflicting round
+        self.assertEqual(fake.draws[1248]["n1"], 1)             # stored numbers untouched
+
+
+class TestPopularityModel(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.rows, cls.true_beta = _synthetic_stats()
+        cls.model = popularity.fit(cls.rows)
+
+    def test_recovers_number_effects_and_shares(self):
+        m = self.model
+        self.assertGreater(np.corrcoef(m.beta, self.true_beta - self.true_beta.mean())[0, 1], 0.99)
+        self.assertAlmostEqual(m.slope, 4.0, delta=0.6)
+        self.assertAlmostEqual(m.auto_share, 0.6, delta=0.03)
+        self.assertLess(m.p_manual, 1e-6)       # manual winners follow the numbers...
+        self.assertGreater(m.p_auto, 0.001)     # ...automatic winners do not
+
+    def test_multiplier_averages_one_and_respects_floor(self):
+        m = self.model
+        self.assertAlmostEqual(float(m.reference().mean()), 1.0, delta=0.005)
+        low, high = (40, 41, 42, 43, 44, 45), (1, 2, 3, 4, 5, 6)
+        self.assertLess(m.multiplier(low), 1.0)
+        self.assertGreater(m.multiplier(high), 1.0)
+        self.assertGreater(m.multiplier(low), m.floor)
+        self.assertLess(m.percentile(low), 0.01)
+        self.assertGreater(m.percentile(high), 0.99)
+
+    def test_exact_normaliser_matches_brute_force_on_small_case(self):
+        from itertools import combinations
+        w = np.linspace(0.5, 1.5, 45)
+        sample = [np.prod(w[list(c)]) for c in combinations(range(12), 6)]
+        e = np.zeros(7); e[0] = 1.0
+        for x in w[:12]:
+            e[1:] = e[1:] + x * e[:-1]
+        self.assertAlmostEqual(e[6], sum(sample), places=8)
+        # and the full-size helper agrees with a large random sample
+        rng = np.random.default_rng(0)
+        picks = np.argsort(rng.random((200_000, 45)), axis=1)[:, :6]
+        self.assertAlmostEqual(popularity._mean_exp_over_all_tickets(w), float(np.prod(w[picks], axis=1).mean()), delta=0.01)
+
+    def test_ticket_value_moves_only_shared_prizes(self):
+        m = self.model
+        low = m.ticket_value((40, 41, 42, 43, 44, 45))
+        high = m.ticket_value((1, 2, 3, 4, 5, 6))
+        self.assertGreater(low["jackpot_net"], low["jackpot_net_avg"])
+        self.assertLess(high["jackpot_net"], high["jackpot_net_avg"])
+        self.assertAlmostEqual(low["return_gross_avg"], 0.5, delta=0.01)   # average ticket returns ~50%
+        self.assertLess(low["return_net"], 1.0)                            # still a losing game
+        self.assertGreater(low["return_net"], high["return_net"])
+
+    def test_suggested_portfolio_is_valid_low_sharing_and_spread(self):
+        m = self.model
+        tickets = popularity.suggest_portfolio(m, games=5, seed=3)
+        generator.validate_portfolio(tickets)
+        self.assertEqual(len(tickets), 5)
+        cutoff = float(np.quantile(m.reference(), 0.05))
+        self.assertTrue(all(m.multiplier(t) <= cutoff for t in tickets))
+        self.assertTrue(all(len(set(a) & set(b)) <= 2 for i, a in enumerate(tickets) for b in tickets[i + 1:]))
+        self.assertEqual(tickets, popularity.suggest_portfolio(m, games=5, seed=3))
+        self.assertNotEqual(tickets, popularity.suggest_portfolio(m, games=5, seed=4))
+
+    def test_holdout_detects_real_effect_and_not_a_fake_one(self):
+        real = popularity.holdout_validation(self.rows)
+        self.assertLess(real["p_value"], 1e-4)
+        self.assertGreater(real["groups"][-1]["winner_ratio"], real["groups"][0]["winner_ratio"])
+        self.assertEqual(sum(g["rounds"] for g in real["groups"]), real["n_test"])
+        flat, _ = _synthetic_stats(seed=1, strength=0.0)       # manual winners ignore the numbers
+        self.assertGreater(popularity.holdout_validation(flat)["p_value"], 0.001)
+
+    def test_pattern_flags(self):
+        self.assertEqual(popularity.pattern_flags((3, 14, 22, 33, 38, 45)), [])
+        self.assertEqual(len(popularity.pattern_flags((5, 10, 15, 20, 25, 30))), 2)     # even spacing + all <= 31
+        self.assertEqual(len(popularity.pattern_flags((20, 21, 22, 23, 40, 45))), 1)    # run of 4
+        self.assertEqual(len(popularity.pattern_flags((2, 11, 16, 25, 34, 40), last_draw=(2, 11, 16, 25, 34, 35))), 1)
+
+    def test_slope_test_is_not_overconfident_on_overdispersed_counts(self):
+        rng = np.random.default_rng(5)
+        exposure = np.full(400, 10.0)
+        score = rng.normal(0, 0.05, 400)
+        false_alarms = 0
+        for _ in range(200):     # counts are 3x a Poisson draw: variance 9x the mean scale, no real slope
+            count = 3.0 * rng.poisson(exposure / 3.0)
+            false_alarms += popularity._slope_test(count, exposure, score)[1] < 0.05
+        self.assertLess(false_alarms / 200, 0.12)
+
+    def test_too_little_data_is_refused(self):
+        with self.assertRaises(ValueError):
+            popularity.fit(self.rows[:50])
+
+
+class TestBundledData(unittest.TestCase):
+    def test_bundled_db_has_stats_for_every_round_and_they_add_up(self):
+        from lotto_quant_v3.data import db
+        stats = db.get_all_stats()
+        self.assertGreaterEqual(len(stats), 1249)
+        self.assertGreaterEqual(len(stats), db.count_draws() - 1)   # the newest round may still lack stats
+        recent = [r for r in stats if r["round"] >= 1000]
+        for r in recent:   # 4th and 5th prizes are fixed amounts
+            self.assertEqual((r["p4"], r["p5"]), (50_000, 5_000))
+            self.assertEqual(r["w1"], (r["auto"] or 0) + (r["semi_auto"] or 0) + (r["manual"] or 0))
+
+    def test_real_data_shows_the_sharing_effect(self):
+        from lotto_quant_v3.data import db
+        rows = db.get_all_stats()
+        m = popularity.fit(rows)
+        self.assertLess(m.p_manual, 1e-6)
+        self.assertGreater(m.p_auto, 0.01)
+        self.assertLess(popularity.holdout_validation(rows)["p_value"], 1e-3)
 
 if __name__ == "__main__":
     unittest.main()

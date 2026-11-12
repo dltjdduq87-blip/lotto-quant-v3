@@ -3,8 +3,6 @@
 Run with:  streamlit run lotto_quant_v3/dashboard/app.py
 (from the project root, so the lotto_quant_v3 package resolves)
 """
-import json
-import math
 import sys
 from pathlib import Path
 
@@ -12,7 +10,6 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
-import streamlit.components.v1 as components
 
 # Make the repo root importable regardless of streamlit's script-dir sys.path quirk.
 _ROOT = Path(__file__).resolve().parent.parent.parent
@@ -20,8 +17,11 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from lotto_quant_v3.backtest import walkforward
-from lotto_quant_v3.data import db, news_search
+from lotto_quant_v3.dashboard import visuals
+from lotto_quant_v3.dashboard.visuals import VIZ, ball_color, render_balls, render_draw_machine
+from lotto_quant_v3.data import db, news_search, results_feed
 from lotto_quant_v3.optimization import optimizer
+from lotto_quant_v3.popularity import model as popularity
 from lotto_quant_v3.portfolio import generator, probability
 from lotto_quant_v3.probability import engine as prob_engine
 from lotto_quant_v3.probability import prize_model
@@ -30,84 +30,9 @@ from lotto_quant_v3.statistics import analysis, randomness_tests, significance
 
 st.set_page_config(page_title="LOTTO 6/45 QUANT V3", page_icon="🎱", layout="wide")
 
-BALL_COLORS = {
-    range(1, 11): "#fbc400",
-    range(11, 21): "#69c8f2",
-    range(21, 31): "#ff7272",
-    range(31, 41): "#aaaaaa",
-    range(41, 46): "#b0d840",
-}
-
-
-def ball_color(n: int) -> str:
-    for rng, color in BALL_COLORS.items():
-        if n in rng:
-            return color
-    return "#333333"
-
-
-# Validated dark-mode palette (dataviz skill reference instance -- dark column).
-# Chart chrome/ink and the categorical-slot-1 blue as the sequential/accent hue.
-VIZ = {
-    "surface": "#1a1a19",       # chart surface
-    "page": "#0d0d0d",          # page plane
-    "ink": "#ffffff",           # primary ink
-    "ink_muted": "#c3c2b7",     # secondary ink
-    "axis_muted": "#898781",    # axis/label ink
-    "grid": "#2c2c2a",          # hairline gridline
-    "accent": "#3987e5",        # categorical slot 1 (blue), sequential hue
-    "accent_soft": "#69c8f2",
-    "good": "#0ca30c",          # status: good
-    "critical": "#e66767",      # dark diverging red pole / status accent
-}
-
 
 def inject_custom_css():
-    st.markdown(f"""
-    <style>
-    .stApp {{ background: {VIZ['page']}; }}
-    [data-testid="stMetric"] {{
-        background: {VIZ['surface']};
-        border: 1px solid rgba(255,255,255,0.10);
-        border-radius: 10px;
-        padding: 14px 16px;
-    }}
-    [data-testid="stMetricLabel"] {{ color: {VIZ['ink_muted']}; }}
-    [data-testid="stTabs"] button[role="tab"] {{
-        font-weight: 600;
-        color: {VIZ['ink_muted']};
-    }}
-    [data-testid="stTabs"] button[aria-selected="true"] {{
-        color: {VIZ['ink']};
-        border-bottom-color: {VIZ['accent']} !important;
-    }}
-    .stButton > button, .stDownloadButton > button {{
-        border-radius: 8px;
-        border: 1px solid rgba(255,255,255,0.14);
-    }}
-    .stButton > button[kind="primary"] {{
-        background: {VIZ['accent']};
-        border: none;
-    }}
-    .lqv-hero {{
-        background: linear-gradient(135deg, {VIZ['surface']} 0%, #12233b 100%);
-        border: 1px solid rgba(255,255,255,0.08);
-        border-radius: 14px;
-        padding: 22px 26px;
-        margin-bottom: 8px;
-    }}
-    .lqv-hero h1 {{
-        margin: 0 0 4px 0;
-        font-size: 1.7rem;
-        background: linear-gradient(90deg, {VIZ['ink']}, {VIZ['accent_soft']});
-        -webkit-background-clip: text;
-        background-clip: text;
-        color: transparent;
-    }}
-    .lqv-hero p {{ margin: 0; color: {VIZ['ink_muted']}; font-size: 0.92rem; }}
-    hr {{ border-color: {VIZ['grid']} !important; }}
-    </style>
-    """, unsafe_allow_html=True)
+    st.markdown(visuals.global_css(), unsafe_allow_html=True)
 
 
 def styled_layout(fig: go.Figure, title: str, xaxis_title: str = "", yaxis_title: str = "") -> go.Figure:
@@ -123,181 +48,9 @@ def styled_layout(fig: go.Figure, title: str, xaxis_title: str = "", yaxis_title
         xaxis=dict(gridcolor=VIZ["grid"], zerolinecolor=VIZ["grid"], color=VIZ["axis_muted"]),
         yaxis=dict(gridcolor=VIZ["grid"], zerolinecolor=VIZ["grid"], color=VIZ["axis_muted"]),
         margin=dict(t=48, l=10, r=10, b=10),
+        transition=dict(duration=450, easing="cubic-out"),
     )
     return fig
-
-
-def render_balls(numbers, bonus: int | None = None, size: int = 46) -> str:
-    def ball_html(n, extra_border=""):
-        return (
-            f'<div style="display:inline-flex;align-items:center;justify-content:center;'
-            f'width:{size}px;height:{size}px;border-radius:50%;background:{ball_color(n)};'
-            f'color:white;font-weight:700;font-size:{int(size*0.4)}px;margin:4px;'
-            f'box-shadow:0 2px 4px rgba(0,0,0,.3);{extra_border}">{n}</div>'
-        )
-    html = "".join(ball_html(n) for n in numbers)
-    if bonus is not None:
-        html += (
-            '<span style="font-size:22px;margin:0 6px;color:#888;">+</span>'
-            + ball_html(bonus, extra_border="border:3px solid #222;")
-        )
-    return html
-
-
-def _drum_ball_positions(n: int = 45, radius: float = 118, cx: float = 145, cy: float = 145):
-    """Sunflower (golden-angle) point distribution so 45 balls pack a circle
-    evenly with no overlap clustering, mirroring the physical draw machine."""
-    golden_angle = math.radians(137.508)
-    pts = []
-    for i in range(n):
-        r = radius * math.sqrt((i + 0.5) / n)
-        theta = i * golden_angle
-        pts.append((cx + r * math.cos(theta), cy + r * math.sin(theta)))
-    return pts
-
-
-def render_draw_machine(my_numbers: list[int], drawn_main: list[int], bonus: int) -> str:
-    """Self-contained HTML/CSS/JS draw-machine animation: a spinning glass
-    drum full of the 45 numbered balls, then a mechanical one-by-one eject
-    into a tray, then the result -- all timed client-side (independent of
-    Streamlit's rerun cycle) so it plays smoothly instead of the old
-    blocking time.sleep()-per-frame approach."""
-    ball_d = 22
-    drum_balls_html = "".join(
-        f'<div class="drum-ball" style="left:{x - ball_d / 2:.1f}px;top:{y - ball_d / 2:.1f}px;'
-        f'width:{ball_d}px;height:{ball_d}px;background:{ball_color(n)};'
-        f'animation-duration:{1.1 + (n % 5) * 0.13:.2f}s;animation-delay:{(n % 7) * 0.09:.2f}s;">{n}</div>'
-        for n, (x, y) in zip(range(1, 46), _drum_ball_positions())
-    )
-
-    match_set = set(my_numbers) & set(drawn_main)
-    has_bonus = bonus in my_numbers
-    match_count = len(match_set)
-    tier_map = {
-        6: "\U0001F947 1등 (6개 일치)",
-        5: ("\U0001F948 2등 (5개 + 보너스)" if has_bonus else "\U0001F949 3등 (5개 일치)"),
-        4: "4등 (4개 일치)",
-        3: "5등 (3개 일치)",
-    }
-    tier = tier_map.get(match_count, "낙첨 (등외)")
-
-    data = {
-        "drawnMain": drawn_main,
-        "bonus": bonus,
-        "myNumbers": my_numbers,
-        "won": match_count >= 3,
-        "matchCount": match_count,
-        "tierText": f"{tier} — {match_count}개 일치" + (" + 보너스" if has_bonus and match_count == 5 else ""),
-        "colors": {str(n): ball_color(n) for n in range(1, 46)},
-    }
-    data_json = json.dumps(data, ensure_ascii=False)
-
-    return f"""
-<style>
-  * {{ box-sizing: border-box; }}
-  .machine-wrap {{ font-family: -apple-system, "Segoe UI", sans-serif; display:flex; flex-direction:column;
-    align-items:center; padding:10px 0 0; }}
-  .drum {{ position:relative; width:290px; height:290px; border-radius:50%;
-    background: radial-gradient(circle at 32% 28%, rgba(120,160,220,.35), rgba(40,60,90,.55) 42%, rgba(20,25,35,.85) 100%);
-    border: 9px solid #4a5568; box-shadow: 0 8px 22px rgba(0,0,0,.6), inset 0 0 30px rgba(120,160,220,.18);
-    overflow: hidden; transition: transform 2.1s cubic-bezier(.36,.07,.19,.97); }}
-  .drum.spinning {{ transform: rotate(1080deg); }}
-  .drum-ball {{ position:absolute; border-radius:50%; color:#fff; font-weight:700;
-    font-size:10px; display:flex; align-items:center; justify-content:center;
-    box-shadow: 0 1px 2px rgba(0,0,0,.5), inset -2px -2px 3px rgba(0,0,0,.3), inset 2px 2px 3px rgba(255,255,255,.35);
-    animation-name: jitter; animation-iteration-count: infinite; animation-timing-function: ease-in-out; }}
-  @keyframes jitter {{ 0%,100% {{ transform: translate(0,0); }} 50% {{ transform: translate(1.5px,-2px); }} }}
-  .stand {{ width:14px; height:34px; background: linear-gradient(#5b6472,#2c333d); margin-top:-4px; }}
-  .base {{ width:150px; height:14px; border-radius:8px; background: linear-gradient(#4a5568,#232830);
-    box-shadow: 0 4px 8px rgba(0,0,0,.5); margin-top:-2px; }}
-  .machine-label {{ margin-top:10px; font-weight:800; letter-spacing:2px; color:#c3c2b7; font-size:13px; }}
-  .trays {{ display:flex; align-items:center; gap:14px; margin-top:22px; flex-wrap:wrap; justify-content:center; }}
-  .tray-main, .tray-bonus {{ display:flex; gap:8px; }}
-  .tray-slot {{ width:40px; height:40px; border-radius:50%; border:2px dashed #3a3f4a; }}
-  .tray-ball {{ width:40px; height:40px; border-radius:50%; color:#fff; font-weight:700; font-size:15px;
-    display:flex; align-items:center; justify-content:center; box-shadow:0 3px 6px rgba(0,0,0,.5);
-    animation: pop .5s cubic-bezier(.34,1.56,.64,1); }}
-  .tray-ball.match {{ box-shadow: 0 0 0 3px #eda100, 0 3px 8px rgba(0,0,0,.5); }}
-  @keyframes pop {{ 0% {{ transform: translateY(-70px) scale(.3); opacity:0; }}
-    60% {{ transform: translateY(6px) scale(1.12); opacity:1; }} 100% {{ transform: translateY(0) scale(1); }} }}
-  .plus-sep {{ font-size:20px; color:#898781; font-weight:700; }}
-  .result-box {{ margin-top:22px; padding:14px 26px; border-radius:12px; background:#1a1a19; color:#c3c2b7;
-    border: 1px solid rgba(255,255,255,0.10);
-    font-size:17px; font-weight:700; opacity:0; transform:translateY(8px); transition: all .5s ease; text-align:center; }}
-  .result-box.show {{ opacity:1; transform:translateY(0); }}
-  .result-box.won {{ background: linear-gradient(135deg,#3a2f0a,#4a3a08); color:#fab219;
-    box-shadow: 0 4px 14px rgba(250,178,25,.25); border-color: rgba(250,178,25,.35); }}
-  .confetti {{ position:absolute; font-size:18px; animation: fall 1.6s ease-in forwards; }}
-  @keyframes fall {{ 0% {{ transform: translateY(-10px) rotate(0deg); opacity:1; }}
-    100% {{ transform: translateY(160px) rotate(360deg); opacity:0; }} }}
-</style>
-<div class="machine-wrap" id="lm-root" style="position:relative;">
-  <div class="drum" id="lm-drum">{drum_balls_html}</div>
-  <div class="stand"></div>
-  <div class="base"></div>
-  <div class="machine-label">LOTTO 6/45</div>
-  <div class="trays">
-    <div class="tray-main" id="lm-tray-main">
-      <div class="tray-slot"></div><div class="tray-slot"></div><div class="tray-slot"></div>
-      <div class="tray-slot"></div><div class="tray-slot"></div><div class="tray-slot"></div>
-    </div>
-    <div class="plus-sep">+</div>
-    <div class="tray-bonus" id="lm-tray-bonus"><div class="tray-slot"></div></div>
-  </div>
-  <div class="result-box" id="lm-result"><span id="lm-result-text"></span></div>
-</div>
-<script>
-(function() {{
-  const DATA = {data_json};
-  const root = document.getElementById('lm-root');
-  const drum = document.getElementById('lm-drum');
-  const trayMain = document.getElementById('lm-tray-main');
-  const trayBonus = document.getElementById('lm-tray-bonus');
-  const resultBox = document.getElementById('lm-result');
-  const resultText = document.getElementById('lm-result-text');
-  const mainSlots = trayMain.querySelectorAll('.tray-slot');
-  const bonusSlot = trayBonus.querySelector('.tray-slot');
-
-  function makeBall(n) {{
-    const d = document.createElement('div');
-    d.className = 'tray-ball' + (DATA.myNumbers.includes(n) ? ' match' : '');
-    d.style.background = DATA.colors[String(n)];
-    d.textContent = n;
-    return d;
-  }}
-
-  setTimeout(() => drum.classList.add('spinning'), 60);
-
-  const spinDuration = 2150, step = 650;
-  let t = spinDuration + 250;
-  DATA.drawnMain.forEach((n, i) => {{
-    setTimeout(() => {{ mainSlots[i].replaceWith(makeBall(n)); }}, t + i * step);
-  }});
-
-  const bonusDelay = t + DATA.drawnMain.length * step + 350;
-  setTimeout(() => {{ bonusSlot.replaceWith(makeBall(DATA.bonus)); }}, bonusDelay);
-
-  const resultDelay = bonusDelay + 900;
-  setTimeout(() => {{
-    resultText.textContent = DATA.tierText;
-    resultBox.classList.add('show');
-    if (DATA.won) {{
-      resultBox.classList.add('won');
-      const emojis = ['\\ud83c\\udf89','\\u2728','\\ud83c\\udf8a','\\ud83d\\udcb0'];
-      for (let i = 0; i < 14; i++) {{
-        const c = document.createElement('div');
-        c.className = 'confetti';
-        c.textContent = emojis[i % emojis.length];
-        c.style.left = (10 + Math.random() * 260) + 'px';
-        c.style.top = '0px';
-        c.style.animationDelay = (Math.random() * .4) + 's';
-        root.appendChild(c);
-      }}
-    }}
-  }}, resultDelay);
-}})();
-</script>
-"""
 
 
 TIER_NAMES = {0: "낙첨", 1: "1등", 2: "2등", 3: "3등", 4: "4등", 5: "5등"}
@@ -321,27 +74,83 @@ def load_history_df():
     return analysis.draws_to_frame(draws)
 
 
+@st.cache_data(ttl=3600)
+def load_stats():
+    return db.get_all_stats()
+
+
+@st.cache_resource(show_spinner=False)
+def load_popularity_model(latest_round: int):
+    """Fitted once per data version (the argument is only the cache key)."""
+    try:
+        return popularity.fit(load_stats())
+    except ValueError:
+        return None
+
+
+@st.cache_data(show_spinner=False)
+def load_holdout(latest_round: int):
+    return popularity.holdout_validation(load_stats())
+
+
+@st.cache_data(ttl=6 * 3600, show_spinner=False)
+def auto_sync(due_round: int) -> dict:
+    """Pull rounds the DB is missing from the result feed. Cached, so the feed is asked at most
+    once per 6 hours per missing round; a failure is returned (not raised) so the app still opens."""
+    try:
+        return results_feed.sync(db)
+    except Exception as exc:  # network down, feed format changed, ...
+        return {"error": str(exc), "new_rounds": []}
+
+
+def ensure_fresh_data() -> dict | None:
+    db.init_db()
+    latest = db.get_latest_round() or 0
+    due = news_search.most_recent_draw_round()
+    if latest >= due and len(load_stats()) >= latest:
+        return None
+    report = auto_sync(due)
+    if report.get("new_rounds") and (db.get_latest_round() or 0) > latest:
+        load_history_df.clear()
+        load_stats.clear()
+    return report
+
+
 def page_overview():
     st.markdown(
-        '<div class="lqv-hero"><h1>🎱 LOTTO 6/45 QUANT V3</h1>'
-        '<p>확률 계산 · 포트폴리오 분산 · 통계적 유의성 검증 -- 당첨 예측 도구가 아닙니다.</p></div>',
+        visuals.hero("🎱", "LOTTO 6/45 QUANT V3",
+                     "확률 계산 · 당첨금 나눠 갖기 분석 · 통계 검증. 당첨 번호를 맞히는 도구가 아니라, "
+                     "같은 확률에서 손해를 덜 보는 방법을 숫자로 확인하는 도구입니다."),
         unsafe_allow_html=True,
     )
     df = load_history_df()
     if df is None:
-        st.warning("DB에 데이터가 없습니다. 사이드바에서 '데이터 갱신'을 먼저 실행하세요.")
+        st.warning("DB에 데이터가 없습니다. 사이드바에서 '최신 회차 받아오기'를 먼저 실행하세요.")
         return
     latest = df.iloc[-1]
-    c1, c2, c3 = st.columns(3)
-    c1.metric("최신 회차", int(latest["round"]))
-    c2.metric("추첨일", latest["date"])
-    c3.metric("DB 보유 회차 수", len(df))
-    st.markdown("**최신 당첨번호**", unsafe_allow_html=True)
-    st.markdown(render_balls(latest["numbers"], latest["bonus"]), unsafe_allow_html=True)
-    st.caption("데이터 출처: 사용자 제공 1~1236회 이력 (엑셀, 검증됨) + 이후 회차는 "
-               "Google 뉴스 검색으로 자동 수집 (언론사 2곳 이상 일치해야 저장, 사이드바 "
-               "'새 회차 확인' 버튼). 동행복권 공식 API(common.do?method=getLottoNumber)는 "
-               "2026-01 사이트 개편 이후 접근 불가함을 확인함 (봇 우회 시도 없음).")
+    st.markdown(f"**{int(latest['round'])}회 당첨번호** · {latest['date']} 추첨")
+    st.markdown(render_balls(latest["numbers"], latest["bonus"], size=54), unsafe_allow_html=True)
+
+    stats = {r["round"]: r for r in load_stats()}.get(int(latest["round"]))
+    if stats and stats.get("w1") is not None:
+        split = ""
+        if stats.get("auto") is not None:
+            split = f"자동 {stats['auto']}명 · 수동 {(stats.get('manual') or 0) + (stats.get('semi_auto') or 0)}명"
+        tiles = [
+            {"label": "1등 한 명이 받은 돈 (세전)", "value": (stats["p1"] or 0) / 1e8, "unit": "억원", "decimals": 1,
+             "note": "당첨자끼리 똑같이 나눈 금액", "gold": True},
+            {"label": "1등 당첨자", "value": stats["w1"], "unit": "명", "note": split},
+            {"label": "이번 회차 판매액", "value": stats["sales"] / 1e8, "unit": "억원", "note": "이 중 절반이 당첨금"},
+            {"label": "보유 회차", "value": len(df), "unit": "회", "note": "1회부터 빠짐없이"},
+        ]
+        st.iframe(visuals.stat_strip(tiles), height="content")
+    else:
+        c1, c2 = st.columns(2)
+        c1.metric("최신 회차", int(latest["round"]))
+        c2.metric("DB 보유 회차 수", len(df))
+    st.caption("데이터 출처: 1~1239회는 사용자 제공 이력(엑셀)과 공개 결과 미러(smok95.github.io/lotto)를 "
+               "전 회차 대조해 일치를 확인했습니다. 이후 회차는 같은 미러에서 자동으로 받아오며, "
+               "당첨자 수 · 당첨금 · 판매액도 함께 저장합니다. 동행복권 공식 API는 2026-01 개편 이후 접근이 막혀 있습니다.")
 
 
 def page_statistics():
@@ -477,7 +286,10 @@ def page_randomness():
 def page_portfolio():
     st.title("💼 포트폴리오 생성 & 정확 확률")
     df = load_history_df()
-    mode = st.radio("생성 방식", ["균등 랜덤 (baseline)", "빈도 가중 (V3)", "분산 최적화 (V3 optimizer)"])
+    mode = st.radio("생성 방식", ["덜 나눠 갖는 번호 (추천)", "균등 랜덤 (baseline)", "빈도 가중 (V3)",
+                              "분산 최적화 (V3 optimizer)"],
+                    help="당첨 확률은 네 방식 모두 똑같습니다. '덜 나눠 갖는 번호'만 당첨됐을 때 받는 돈이 달라집니다.")
+    pop_model = load_popularity_model(db.get_latest_round() or 0)
 
     use_fixed_seed = st.checkbox("시드 고정 (재현용 -- 끄면 매번 새로운 무작위 번호)", value=False)
     seed = None
@@ -485,11 +297,13 @@ def page_portfolio():
         seed = int(st.number_input("시드 값", value=0, step=1))
 
     weights = None
-    if mode != "균등 랜덤 (baseline)" and df is not None:
+    if mode in ("빈도 가중 (V3)", "분산 최적화 (V3 optimizer)") and df is not None:
         weights = (analysis.number_frequency(df).values + 1).astype(float)
 
-    if st.button("5게임 생성"):
-        if mode == "분산 최적화 (V3 optimizer)":
+    if st.button("5게임 생성", type="primary"):
+        if mode == "덜 나눠 갖는 번호 (추천)" and pop_model is not None:
+            tickets = popularity.suggest_portfolio(pop_model, games=5, seed=seed)
+        elif mode == "분산 최적화 (V3 optimizer)":
             tickets = optimizer.optimize_portfolio(weights=weights, seed=seed)
         else:
             tickets = generator.generate_portfolio(weights=weights, seed=seed)
@@ -498,8 +312,11 @@ def page_portfolio():
     tickets = st.session_state.get("portfolio")
     if tickets:
         for i, t in enumerate(tickets, 1):
-            st.markdown(f"**게임 {i}**", unsafe_allow_html=True)
-            st.markdown(render_balls(t, size=36), unsafe_allow_html=True)
+            note = ""
+            if pop_model is not None:
+                note = f" · 1등 당첨 시 나눠 갖는 정도 평균의 {pop_model.multiplier(t):.2f}배"
+            st.markdown(f"**게임 {i}**{note}")
+            st.markdown(render_balls(t, size=40), unsafe_allow_html=True)
 
         if st.button("이 포트폴리오의 정확 당첨 확률 계산 (전수조사, 1초 이내)"):
             with st.spinner("C(45,6) = 8,145,060개 조합 전수 계산 중..."):
@@ -661,8 +478,7 @@ def page_play():
         bonus = pool[6]
 
         st.divider()
-        components.html(render_draw_machine(my_ticket, drawn_main, bonus), height=640, scrolling=False)
-
+        st.iframe(render_draw_machine(my_ticket, drawn_main, bonus), height=720)
 
 
 def page_strategy_lab():
@@ -756,8 +572,128 @@ def page_strategy_lab():
         st.plotly_chart(fig, width="stretch")
 
 
+def _eok(v: float) -> str:
+    return f"{v / 1e8:,.1f}억원"
+
+
+def _chance(p: float) -> str:
+    """A p-value in plain words."""
+    if p < 1e-6:
+        return "100만 분의 1도 안 됩니다"
+    if p < 0.001:
+        return f"약 {1 / p:,.0f}분의 1입니다"
+    return f"{p * 100:.1f}%입니다"
+
+
+def page_share():
+    st.markdown(
+        visuals.hero("💎", "당첨금 지키기",
+                     "어떤 번호를 골라도 당첨 확률은 똑같습니다. 달라지는 건 당첨됐을 때 몇 명과 나눠 갖느냐입니다. "
+                     "1~3등 당첨금은 같은 번호를 맞힌 사람끼리 똑같이 나누기 때문입니다.",
+                     balls=(29, 36, 41, 43, 44, 45)),
+        unsafe_allow_html=True,
+    )
+    latest_round = db.get_latest_round() or 0
+    model = load_popularity_model(latest_round)
+    if model is None:
+        st.warning("당첨자 수 데이터가 부족합니다. 사이드바에서 '최신 회차 받아오기'를 눌러 주세요.")
+        return
+    df = load_history_df()
+    last_draw = df.iloc[-1]["numbers"] if df is not None else None
+    prize = prize_model.PrizeModel()
+
+    st.subheader("내 번호는 몇 명과 나눠 갖게 될까")
+    tickets = st.session_state.get("portfolio") or []
+    default = list(st.session_state.get("my_ticket") or (tickets[0] if tickets else (5, 14, 22, 31, 38, 45)))
+    picked = st.multiselect("번호 6개를 고르세요", options=list(range(1, 46)), default=default,
+                            max_selections=6, key="share_pick")
+    if len(picked) == 6:
+        ticket = tuple(sorted(picked))
+        v = model.ticket_value(ticket, prize)
+        st.markdown(render_balls(ticket, size=50), unsafe_allow_html=True)
+        st.markdown(visuals.share_meter(v["multiplier"], model.floor, float(model.reference()[-1])),
+                    unsafe_allow_html=True)
+        diff = v["jackpot_net"] / v["jackpot_net_avg"] - 1
+        tone = "lqv-up" if diff >= 0 else "lqv-down"
+        c1, c2, c3 = st.columns(3)
+        c1.markdown(visuals.card(
+            "1등 당첨 시 받는 돈 (세후)", _eok(v["jackpot_net"]),
+            f'평균 조합 {_eok(v["jackpot_net_avg"])} 대비 <span class="{tone}">{diff*100:+.0f}%</span>'),
+            unsafe_allow_html=True)
+        pct = v["percentile"]
+        rank = (f"전체 조합 중 덜 나눠 갖는 쪽 상위 {max(pct, 0.001)*100:.1f}%" if pct < 0.5
+                else f"전체 조합 중 많이 나눠 갖는 쪽 상위 {max(1 - pct, 0.001)*100:.1f}%")
+        c2.markdown(visuals.card("같이 당첨되는 사람 수", f'평균의 {v["multiplier"]:.2f}배', rank),
+                    unsafe_allow_html=True)
+        c3.markdown(visuals.card(
+            "1,000원당 기대 회수 (세후)", f'{v["return_net"]*1000:,.0f}원',
+            f'평균 조합 {v["return_net_avg"]*1000:,.0f}원 · 여전히 1,000원보다 적습니다'),
+            unsafe_allow_html=True)
+        for flag in popularity.pattern_flags(ticket, last_draw):
+            st.warning(flag + " 이런 모양은 위 계산보다 실제로 훨씬 많이 겹칠 수 있습니다.")
+    else:
+        st.info("번호 6개를 모두 고르면 계산합니다.")
+
+    st.divider()
+    st.subheader("덜 나눠 갖는 번호로 5게임 만들기")
+    st.caption("덜 나눠 갖는 쪽 상위 3% 조합 수십만 개 중에서 무작위로 고릅니다. 누를 때마다 다른 번호가 나옵니다.")
+    if st.button("💎 5게임 만들기", type="primary", key="share_make"):
+        st.session_state["portfolio"] = popularity.suggest_portfolio(model, games=5)
+        st.session_state["share_made"] = True
+    if st.session_state.get("share_made") and st.session_state.get("portfolio"):
+        for i, t in enumerate(st.session_state["portfolio"], 1):
+            tv = model.ticket_value(t, prize)
+            st.markdown(f"**게임 {i}** · 1등 당첨 시 세후 약 {_eok(tv['jackpot_net'])} "
+                        f"(평균 조합보다 {(tv['jackpot_net']/tv['jackpot_net_avg']-1)*100:+.0f}%)")
+            st.markdown(render_balls(t, size=40), unsafe_allow_html=True)
+        st.caption("이 5게임은 '번호 생성' · 'Monte Carlo' 탭에도 그대로 넘어갑니다.")
+
+    st.divider()
+    st.subheader("사람들이 많이 고르는 번호, 덜 고르는 번호")
+    st.markdown(visuals.popularity_grid(100 * np.exp(model.slope * model.beta)), unsafe_allow_html=True)
+    st.caption(f"{model.round_range[0]}–{model.round_range[1]}회 당첨자 수로 추정한, 직접 번호를 고르는 사람들의 선호입니다. "
+               "작은 번호와 7 · 12 · 17 같은 번호에 몰리고, 29와 40번대는 덜 고릅니다. "
+               "덜 고른다고 더 잘 나오는 것은 아닙니다 — 나왔을 때 나눠 가질 사람이 적을 뿐입니다.")
+
+    st.divider()
+    st.subheader("이게 진짜인지: 처음 보는 회차로 검증")
+    hold = load_holdout(latest_round)
+    labels = ["가장 덜 고르는\n번호가 나온 회차", "덜 고르는 편", "중간", "많이 고르는 편", "가장 많이 고르는\n번호가 나온 회차"]
+    prizes = [g["avg_prize"] / 1e8 for g in hold["groups"]]
+    fig = go.Figure(go.Bar(
+        x=[label.replace("\n", "<br>") for label in labels], y=prizes,
+        marker_color=[VIZ["accent"]] * 5, text=[f"{p:.1f}억" for p in prizes], textposition="outside",
+        textfont=dict(color=VIZ["ink"]), cliponaxis=False,
+        hovertemplate="%{x}<br>1등 1인당 평균 %{y:.1f}억원<extra></extra>",
+    ))
+    styled_layout(fig, "많이 고르는 번호가 나온 회차는 1등 한 명이 받은 돈이 적었습니다 (1인당 실제 당첨금, 억원)")
+    fig.update_layout(margin=dict(t=56, l=10, r=10, b=10), yaxis_range=[0, max(prizes) * 1.18])
+    st.plotly_chart(fig, width="stretch")
+    st.info(
+        f"번호 선호는 {hold['train_rounds'][0]}–{hold['train_rounds'][1]}회만 보고 계산했고, 위 막대는 그 계산에 "
+        f"쓰지 않은 {hold['test_rounds'][0]}–{hold['test_rounds'][1]}회({hold['n_test']}회)의 실제 결과입니다. "
+        f"번호 선호와 1등 당첨자 수가 무관한데 우연히 이만큼 맞아떨어질 확률은 {_chance(hold['p_value'])}. "
+        f"자동 구매 당첨자 수는 번호와 무관했고(우연일 확률 {model.p_auto*100:.0f}%), 수동 구매 당첨자 수만 번호에 따라 "
+        "달라졌습니다. 자동은 번호를 고르지 않으니 그래야 맞습니다."
+    )
+    best = tuple(int(n) + 1 for n in np.argsort(model.beta)[:6])
+    best_return = model.ticket_value(best, prize)["return_net"]
+    with st.expander("한계와 주의할 점"):
+        st.markdown(
+            f"- **당첨 확률은 전혀 오르지 않습니다.** 1등 확률은 어떤 번호든 1/8,145,060입니다.\n"
+            f"- **줄일 수 있는 폭에 한계가 있습니다.** 1등 당첨자의 약 {model.auto_share/(model.auto_share+model.manual_share)*100:.0f}%는 "
+            f"자동 구매라 어떤 번호든 똑같이 겹칩니다. 그래서 나눠 갖는 정도는 평균의 {model.floor:.2f}배 아래로 내려갈 수 없습니다.\n"
+            f"- **여전히 손해 보는 게임입니다.** 가장 유리한 조합도 1,000원당 기대 회수가 세후 {best_return*1000:,.0f}원입니다.\n"
+            "- **번호 하나하나의 인기만 봅니다.** 1-2-3-4-5-6처럼 모양으로 찍는 조합은 실제로 훨씬 많이 겹치는데, "
+            "이 계산에는 일부만 반영됩니다(위 경고 문구로 따로 알려 드립니다).\n"
+            "- **1등이 나와야 의미가 있습니다.** 평생 1등을 한 번도 못 맞힐 가능성이 압도적으로 높고, "
+            "그 경우 이 방법으로 달라지는 것은 3등 당첨금 정도입니다."
+        )
+
+
 PAGES = {
     "🎰 추첨 플레이": page_play,
+    "💎 당첨금 지키기": page_share,
     "💼 번호 생성": page_portfolio,
     "개요": page_overview,
     "통계 분석": page_statistics,
@@ -772,11 +708,31 @@ PAGES = {
 
 def sidebar_data_refresh():
     st.sidebar.header("데이터")
-    db.init_db()
+    report = ensure_fresh_data()
     latest = db.get_latest_round()
     st.sidebar.caption(f"DB 최신 회차: {latest if latest else '없음'}")
+    if report and report.get("new_rounds"):
+        st.sidebar.success(f"새 회차 {len(report['new_rounds'])}개를 자동으로 받아왔습니다.")
+    elif report and report.get("error"):
+        st.sidebar.warning("새 회차를 자동으로 받아오지 못했습니다. 잠시 뒤 아래 버튼으로 다시 시도하세요.")
+    if st.sidebar.button("⬇️ 최신 회차 받아오기 (당첨자 수 · 당첨금 포함)"):
+        with st.sidebar:
+            with st.spinner("결과 미러에서 받아오는 중..."):
+                try:
+                    manual = results_feed.sync(db)
+                except Exception as exc:
+                    st.error(f"받아오지 못했습니다: {exc}")
+                else:
+                    if manual["conflicts"]:
+                        st.warning(f"기존 데이터와 번호가 다른 회차가 있어 그대로 두었습니다: {manual['conflicts']}")
+                    st.success(f"새 회차 {len(manual['new_rounds'])}개 · 통계 {manual['stats_rows']}회차 저장")
+                    load_history_df.clear()
+                    load_stats.clear()
+                    auto_sync.clear()
+    st.sidebar.divider()
+    st.sidebar.caption("예비 수단: 뉴스 검색으로 번호만 확인")
     min_sources = st.sidebar.slider("뉴스 교차검증 최소 언론사 수", 2, 5, 2)
-    if st.sidebar.button("🔎 새 회차 확인 (뉴스 검색 자동화)"):
+    if st.sidebar.button("🔎 뉴스 검색으로 새 회차 확인"):
         with st.sidebar:
             with st.spinner("Google 뉴스에서 신규 회차 검색 및 다중 언론사 교차검증 중..."):
                 base_round = latest or 0

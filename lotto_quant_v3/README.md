@@ -62,6 +62,13 @@ python -m unittest lotto_quant_v3.tests.test_core -v
 대해 테스트한 결과 최대 18개 언론사가 동일 번호에 합의했고, 엑셀 기준 데이터와
 100% 일치했습니다.
 
+**기본 수집 경로 (1249회 적용~):** `data/results_feed.py`가 공개 결과 미러
+(`smok95.github.io/lotto/results/all.json`)에서 당첨번호와 함께 **등수별 당첨자 수 ·
+당첨금 · 판매액 · 1등 자동/수동 인원**을 받아 `draw_stats` 테이블에 저장합니다.
+1~1239회 번호를 기존 DB와 전부 대조해 불일치 0건을 확인했습니다. 대시보드를 열 때
+빠진 회차가 있으면 자동으로 받아오고(6시간에 한 번까지), 기존 번호와 다른 회차는
+덮어쓰지 않고 그대로 둡니다. 뉴스 검색은 예비 수단으로 남아 있습니다.
+
 이전에 쓰던 [lottolyzer.com](https://en.lottolyzer.com) / [pyony.com](https://pyony.com)
 스크래퍼는 `data/collector.py`에 백업 방식으로 남아있습니다 (더 이상 기본 경로는 아님).
 
@@ -80,9 +87,18 @@ python -m unittest lotto_quant_v3.tests.test_core -v
 | `optimization/optimizer.py` | 번호 커버리지 분산 최적화 (예측이 아닌 분산) |
 | `simulation/monte_carlo.py` | 최대 100만 회 몬테카를로 시뮬레이션 |
 | `backtest/walkforward.py` | Walk-forward 백테스트 (미래 데이터 누출 방지 assert 포함) |
+| `data/results_feed.py` | 당첨번호 + 당첨자 수 · 당첨금 · 판매액 수집 (검증 후 저장, 충돌 시 덮어쓰지 않음) |
+| `popularity/model.py` | 💎 당첨금 나눠 갖기 모델: 번호별 선호 추정, 조합별 공동 당첨 배수, 기대 수령액, 처음 보는 회차 검증 |
 | `dashboard/app.py` | Streamlit 대시보드 + 🎰 추첨 플레이 모드 |
+| `dashboard/visuals.py` | 화면 테마 · 공 그래픽 · 추첨기 애니메이션 (HTML/CSS/JS) |
 
 ## 알려진 한계
+
+- **당첨금 나눠 갖기 분석은 당첨 확률을 올리지 않습니다.** 덜 고르는 번호를 써도 1등 확률은
+  1/8,145,060 그대로이고, 달라지는 것은 당첨됐을 때 나눠 갖는 인원뿐입니다. 1등 당첨자의
+  약 64%는 자동 구매라 줄일 수 있는 폭에 하한이 있고, 가장 유리한 조합도 기대 회수율은
+  100% 아래입니다. 번호 하나하나의 선호만 반영하므로 1-2-3-4-5-6 같은 모양 조합의 실제
+  중복은 과소평가됩니다.
 
 - Walk-forward 백테스트 결과, 빈도 가중 포트폴리오(V3)는 랜덤 baseline 대비
   통계적으로 유의한 우위가 없습니다 (p≈0.32). 이는 로또 추첨이 균등분포
